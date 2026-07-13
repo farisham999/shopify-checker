@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from engine import shopify_auto_check
-import asyncio
+import json
 
 app = FastAPI()
 
@@ -13,28 +14,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+async def event_stream(card_str, site_url, proxy_str):
+    async for data in shopify_auto_check(card_str, site_url, proxy_str):
+        yield f"data: {json.dumps(data)}\n\n"
+
 @app.post("/check")
 async def check_card(request: Request):
     data = await request.json()
     card_str = data.get("card")
     site_url = data.get("site")
+    proxy_str = data.get("proxy")
     
-    # INI PENTING: Baca proxy yang dihantar dari HTML
-    proxy_str = data.get("proxy") 
-    
-    try:
-        status, message, price = await shopify_auto_check(card_str, site_url, proxy_str)
-        return {
-            "status": status,
-            "message": message,
-            "price": price
-        }
-    except Exception as e:
-        return {
-            "status": "ERROR",
-            "message": f"Server Error: {str(e)}",
-            "price": "-"
-        }
+    return StreamingResponse(
+        event_stream(card_str, site_url, proxy_str),
+        media_type="text/event-stream"
+    )
 
 if __name__ == "__main__":
     import uvicorn
