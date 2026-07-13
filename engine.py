@@ -874,8 +874,7 @@ def _classify_response(response_text: str) -> tuple:
     return "Error", resp if resp else "No response", "-"
 
 async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None) -> tuple:
-    if not proxy_str:
-        return "ERROR", "No proxy provided", "-"
+    # KITA DAH BUANG LINE 'if not proxy_str: return "ERROR", "No proxy provided", "-"' KAT SINI
 
     parts = card_str.split("|")
     if len(parts) == 4:
