@@ -874,6 +874,8 @@ def _classify_response(response_text: str) -> tuple:
     return "Error", resp if resp else "No response", "-"
 
 async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None) -> tuple:
+    # KITA DAH BUANG LINE 'if not proxy_str: return "ERROR", "No proxy provided", "-"' KAT SINI
+
     parts = card_str.split("|")
     if len(parts) == 4:
         cc, mes, ano, cvv = parts
@@ -891,22 +893,16 @@ async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None
         site = "https://" + site
 
     try:
-        # Dapatkan result mentah dari process_card
-        success, raw_message, gateway, price, currency = await process_card(
+        success, message, gateway, price, currency = await process_card(
             cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
         )
         
-        # ==========================================================
-        # AKU TUKAR BAHAGIAN NI: HANTAR RAW MESSAGE TERUS KE HTML
-        # ==========================================================
+        status, _, _ = _classify_response(message)
         
-        # Jika proses teknikal gagal (contoh: x dapat token, x dapat session)
-        if not success:
-            return "Error", raw_message, price
+        if not success and status not in ("Charged", "Approved", "3DS", "Dead"):
+            return "Error", message, price
             
-        # Jika proses teknikal berjaya, hantar EXACT message dari Shopify/Bank
-        # Kita abaikan _classify_response() supaya kau nampak asal data tulen
-        return "Raw_Gateway_Response", raw_message, price
+        return status, message, price
 
     except Exception as e:
         return "ERROR", str(e)[:150], "-"
