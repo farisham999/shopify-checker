@@ -286,24 +286,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     last_name = random.choice(["Smith", "Johnson", "Williams", "Brown", "Garcia", "Miller", "Davis"])
     email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@gmail.com"
     
-    bin_country = await fetch_bin_country(cc, proxy_str)
-    billing_addr = get_address_for_country(bin_country)
-    shipping_addr = get_address_for_country("US")
-    
-    b_add1 = billing_addr["address1"]
-    b_city = billing_addr["city"]
-    b_state_short = billing_addr["zoneCode"]
-    b_zip_code = billing_addr["postalCode"]
-    b_phone = billing_addr["phone"]
-    b_country_code = billing_addr["countryCode"]
-    
-    s_add1 = shipping_addr["address1"]
-    s_city = shipping_addr["city"]
-    s_state_short = shipping_addr["zoneCode"]
-    s_zip_code = shipping_addr["postalCode"]
-    s_phone = shipping_addr["phone"]
-    s_country_code = shipping_addr["countryCode"]
-    
     try:
         # 1. Fetch cheapest product variant if not provided
         if not variant_id:
@@ -947,6 +929,9 @@ async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None
     site = site_url.strip().rstrip("/")
     if not site.startswith("http"):
         site = "https://" + site
+
+    # >>> TAMBAHAN FIX: Hantar heartbeat pertama sebab Railway timeout <<<
+    yield {"type": "log", "msg": "[INIT] Stream connected. Initializing engine..."}
 
     try:
         async for log_msg in process_card(cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str):
