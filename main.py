@@ -18,7 +18,9 @@ async def check_card(request: Request):
     data = await request.json()
     card_str = data.get("card")
     site_url = data.get("site")
-    proxy_str = None 
+    
+    # INI DIA BACA PROXY YANG KAU HANTAR DARI INDEX.HTML
+    proxy_str = data.get("proxy") 
     
     try:
         status, message, price = await shopify_auto_check(card_str, site_url, proxy_str)
