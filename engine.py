@@ -287,7 +287,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@gmail.com"
     
     try:
-        # 1. Fetch cheapest product variant if not provided
         if not variant_id:
             yield f"[STEP 1] Fetching products from {ourl}/products.json..."
             info = await fetch_products(ourl, proxy_str)
@@ -318,7 +317,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
         }
 
         async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
-            # Visit product page to set cookies
             yield f"[STEP 2] Visiting product page to drop cookies..."
             try:
                 await session.get(product_link, headers=product_headers)
@@ -326,13 +324,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             except Exception as e:
                 yield f"[WARN STEP 2] Error visiting page: {str(e)[:50]}"
 
-            # Hit /cart.js to initialize session
             try:
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
             except Exception:
                 pass
 
-            # Add cheapest item to cart
             yield f"[STEP 3] Adding variant {variant_id} to cart..."
             add_headers = {
                 **product_headers,
@@ -357,7 +353,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 yield f"[ERROR STEP 3] {str(e)}"
                 return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency
 
-            # Get cart token from /cart.js
             cart_token = ""
             try:
                 resp = await session.get(f"{ourl}/cart.js", headers=product_headers)
@@ -367,7 +362,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             except Exception:
                 pass
 
-            # Trigger checkout redirect
             yield f"[STEP 4] Triggering checkout flow..."
             checkout_headers = {
                 **product_headers,
@@ -399,7 +393,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 yield f"[ERROR STEP 4] Site requires login!"
                 return False, "Site requires login!", gateway, total_price, currency
 
-            # Extract checkout and session tokens
             yield f"[STEP 5] Extracting Session Token (SST)..."
             sst = None
             sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
@@ -420,25 +413,21 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 
             yield f"[STEP 5 OK] SST Extracted: {sst[:30]}..."
 
-            # Extract queueToken, stableId, paymentMethodIdentifier
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
             stable_id = extract_between(text, 'stableId&quot;:&quot;', '&quot;') or extract_between(text, '"stableId":"', '"') or "1"
             paymentMethodIdentifier = extract_between(text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;') or extract_between(text, '"paymentMethodIdentifier":"', '"') or "credit_card"
 
-            # Parse currency and price from HTML
             currency = 'USD'
             if 'currencyCode&quot;:&quot;' in text:
                 currency = extract_between(text, 'currencyCode&quot;:&quot;', '&quot;') or 'USD'
             elif '"currencyCode":"' in text:
                 currency = extract_between(text, '"currencyCode":"', '"') or 'USD'
 
-            # Try to parse the checkout token
             attempt_token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
             c_token = attempt_token_match.group(1) if attempt_token_match else checkout_url.split('/')[-1].split('?')[0]
             if not c_token or len(c_token) < 5 or 'checkout' in c_token:
                 c_token = cart_token or "1"
 
-            # 2. Tokenize card at deposit.us.shopifycs.com/sessions
             yield f"[STEP 6] Tokenizing card at shopifycs.com..."
             session_endpoints = [
                 "https://deposit.us.shopifycs.com/sessions",
@@ -489,7 +478,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 yield f"[ERROR STEP 6] Tokenization failed: {token_error}"
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            # 3. Submit GraphQL payment directly
             yield f"[STEP 7] Submitting GraphQL (SubmitForCompletion)..."
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
             graphql_headers = {
@@ -720,7 +708,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     yield f"[ERROR STEP 7] Exception: {str(e)}"
                     return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
-            # 4. Poll for receipt status
             if receipt_id:
                 yield f"[STEP 8] Polling for receipt status (Waiting bank response)..."
                 poll_payload = {
@@ -759,7 +746,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             else:
                 yield f"[WARN STEP 8] No Receipt ID to poll."
 
-            # 5. Fallback final check
             yield f"[STEP 9] Running fallback HTML check..."
             try:
                 checkout_url_final = f"{ourl}/checkout?from_processing_page=1&validate=true"
@@ -930,10 +916,15 @@ async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None
     if not site.startswith("http"):
         site = "https://" + site
 
-    # >>> TAMBAHAN FIX: Hantar heartbeat pertama sebab Railway timeout <<<
+    # FIX: Hantar heartbeat pertama SEBELUM proses berat bermula
     yield {"type": "log", "msg": "[INIT] Stream connected. Initializing engine..."}
 
     try:
+        # FIX: Log sebelum check BIN supaya tidak senyap
+        yield {"type": "log", "msg": "[INIT] Checking BIN country..."}
+        bin_country = await fetch_bin_country(cc, proxy_str)
+        yield {"type": "log", "msg": f"[INIT] BIN Country set to: {bin_country}"}
+
         async for log_msg in process_card(cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str):
             if isinstance(log_msg, tuple):
                 success, message, gateway, price, currency = log_msg
