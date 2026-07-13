@@ -197,6 +197,7 @@ def get_address_for_country(country_code):
     country_code = (country_code or "US").upper()
     first, last = Utils.get_random_name()
     
+    # Kita pastikan format phone sentiasa betul untuk Shopify
     us_phones = [
         "2025550199", "3105551234", "4155559876", "6175550123",
         "9718081573", "2125559999", "7735551212", "4085556789",
@@ -212,13 +213,15 @@ def get_address_for_country(country_code):
             ("Phoenix", "AZ", "85001"),
         ]
         city, state, zip_c = random.choice(cities)
+        # Ubah format phone supaya sentiasa valid
+        phone_num = random.choice(us_phones)
         return {
             "address1": f"{random.randint(100, 9999)} {random.choice(streets)}",
             "city": city,
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "US",
-            "phone": random.choice(us_phones)
+            "phone": f"+1{phone_num}" # Tambahan +1 depan
         }
     elif country_code == "CA":
         streets = ["Queen St", "King St", "Yonge St", "Robson St"]
@@ -234,7 +237,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "CA",
-            "phone": f"416{''.join(random.choice('0123456789') for _ in range(7))}"
+            "phone": f"+1{''.join(random.choice('0123456789') for _ in range(10))}" # Tambahan +1 depan
         }
     elif country_code == "GB":
         streets = ["High St", "London Rd", "Station Rd", "Church St"]
@@ -249,7 +252,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "GB",
-            "phone": f"7{''.join(random.choice('0123456789') for _ in range(9))}"
+            "phone": f"+44{''.join(random.choice('0123456789') for _ in range(10))}" # Tambahan +44 depan
         }
     elif country_code == "AU":
         streets = ["George St", "Collins St", "Queen St"]
@@ -264,7 +267,7 @@ def get_address_for_country(country_code):
             "postalCode": zip_c,
             "zoneCode": state,
             "countryCode": "AU",
-            "phone": f"04{''.join(random.choice('0123456789') for _ in range(8))}"
+            "phone": f"+61{''.join(random.choice('0123456789') for _ in range(9))}" # Tambahan +61 depan
         }
     else:
         if country_code in book:
@@ -272,7 +275,8 @@ def get_address_for_country(country_code):
         else:
             addr = book["DEFAULT"].copy()
         addr["address1"] = f"{random.randint(10, 999)} {addr['address1']}"
-        addr["phone"] = random.choice(us_phones)
+        # Pastikan phone selalu ada +1 kalau default US
+        addr["phone"] = f"+1{random.choice(us_phones)}" 
         return addr
 
 async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=None):
