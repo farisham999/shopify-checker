@@ -476,8 +476,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            # DELAY ANTI-BOT 4 ke 6 saat supaya Stripe tak block GENERIC_ERROR
-            await asyncio.sleep(random.uniform(4.0, 6.0))
+            await asyncio.sleep(random.uniform(2.0, 4.0))
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
@@ -659,15 +658,15 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             }
 
             receipt_id = None
-            for submit_attempt in range(3): # Tambahan attempt untuk retry WAITING_PENDING_TERMS
+            for submit_attempt in range(2):
                 try:
                     graphql_resp = await session.post(graphql_url, headers=graphql_headers, json=graphql_payload, timeout=15)
                     await queue.put({"type": "log", "msg": f"          -> GraphQL HTTP Status: {graphql_resp.status_code}"})
                     
                     if graphql_resp.status_code != 200:
-                        if submit_attempt < 2:
-                            await queue.put({"type": "log", "msg": "          -> Retrying in 3s..."})
-                            await asyncio.sleep(3)
+                        if submit_attempt == 0:
+                            await queue.put({"type": "log", "msg": "          -> Retrying in 2s..."})
+                            await asyncio.sleep(2)
                             continue
                         await queue.put({"type": "log", "msg": "[ERROR STEP 7] GraphQL submission failed."})
                         return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
@@ -694,9 +693,9 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
-                        if only_soft_errors and submit_attempt < 2:
+                        if only_soft_errors and submit_attempt == 0:
                             graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(2)
                             continue
                         
                         non_soft_errors = [code for code in error_codes if code not in soft_errors]
@@ -710,8 +709,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                     
                     break
                 except Exception as e:
-                    if submit_attempt < 2:
-                        await asyncio.sleep(3)
+                    if submit_attempt == 0:
+                        await asyncio.sleep(2)
                         continue
                     await queue.put({"type": "log", "msg": f"[ERROR STEP 7] Exception: {str(e)}"})
                     return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
@@ -748,6 +747,9 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                 code = receipt.get('processingError', {}).get('code') or "UNKNOWN_CODE"
                                 msg = receipt.get('processingError', {}).get('messageUntranslated') or "No message"
                                 await queue.put({"type": "log", "msg": f"[FAILED] Bank Rejected: {code} - {msg}"})
+                                # Jika bank bagi GENERIC_ERROR, tukar direct jadi CARD_DECLINED
+                                if code == "GENERIC_ERROR":
+                                    return True, "CARD_DECLINED", gateway, total_price, currency
                                 return True, f"{code}", gateway, total_price, currency
                     except Exception:
                         pass
@@ -894,6 +896,9 @@ def _classify_response(response_text: str) -> tuple:
         return "Approved", resp, "-"
         
     if any(k in resp_lower for k in declined_patterns):
+        # Supaya UI tunjuk CARD_DECLINED jela, bukan GENERIC_ERROR
+        if 'generic_error' in resp_lower or 'generic_decline' in resp_lower:
+            return "Dead", "CARD_DECLINED", "-"
         return "Dead", resp, "-"
     if any(k in resp_lower for k in system_error_patterns):
         return "Error", resp, "-"
