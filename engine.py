@@ -649,13 +649,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
-                        # --- TAMBAH BAHAGIAN INI UNTUK ACCEPT PENDING TERMS ---
-                        'negotiationStrategy': {
-                            'acceptedTerms': True,
-                            'acceptUnexpectedDiscounts': True,
-                            'acceptUnexpectedTaxes': True
-                        },
-                        # -------------------------------------------------------
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
