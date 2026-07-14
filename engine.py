@@ -6,14 +6,14 @@ import uuid
 import os
 from urllib.parse import urlparse
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from curl_cffi.requests import AsyncSession
 import uvicorn
 
 app = FastAPI()
 
-# Allow CORS supaya webhosting boleh connect
+# Allow CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,8 +21,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-active_streams = {}
 
 # ==================== SHOPIFY GATEWAY LOGIC ====================
 
@@ -363,6 +361,7 @@ async def api_stream_checkout(request: Request):
 
     job_id = str(uuid.uuid4())
     queue = asyncio.Queue()
+    active_streams = {} # Simpan kat sini
     active_streams[job_id] = queue
 
     async def background_task():
