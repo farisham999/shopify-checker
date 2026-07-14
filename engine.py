@@ -7,9 +7,6 @@ from urllib.parse import urlparse
 from curl_cffi.requests import AsyncSession
 
 # ==================== DIRECT SHOPIFY GATEWAY ====================
-# Runs Shopify checkout via GraphQL queries directly inside the bot.
-# Bypasses the external Railway API entirely.
-# Powered by curl_cffi to bypass Cloudflare/WAF on all Shopify sites.
 
 C2C = {
     "CAD": "CA", 
@@ -289,6 +286,24 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
     first_name = random.choice(["John", "Emily", "Alex", "Sarah", "Michael", "Jessica", "David", "Lisa"])
     last_name = random.choice(["Smith", "Johnson", "Williams", "Brown", "Garcia", "Miller", "Davis"])
     email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@gmail.com"
+    
+    bin_country = await fetch_bin_country(cc, proxy_str)
+    billing_addr = get_address_for_country(bin_country)
+    shipping_addr = get_address_for_country("US")
+    
+    b_add1 = billing_addr["address1"]
+    b_city = billing_addr["city"]
+    b_state_short = billing_addr["zoneCode"]
+    b_zip_code = billing_addr["postalCode"]
+    b_phone = billing_addr["phone"]
+    b_country_code = billing_addr["countryCode"]
+    
+    s_add1 = shipping_addr["address1"]
+    s_city = shipping_addr["city"]
+    s_state_short = shipping_addr["zoneCode"]
+    s_zip_code = shipping_addr["postalCode"]
+    s_phone = shipping_addr["phone"]
+    s_country_code = shipping_addr["countryCode"]
     
     try:
         # 1. Fetch cheapest product variant if not provided
@@ -921,9 +936,9 @@ async def run_background_process(job_id: str, card_str: str, site_url: str, prox
     await queue.put({"type": "log", "msg": "[INIT] Stream connected. Engine processing..."})
 
     try:
-        # Gunakan 100% kod process_card asal anda
+        # PASTIKAN QUEUE DIHANTAR SEBAGAI ARGUMEN PERTAMA
         success, message, gateway, price, currency = await process_card(
-            cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
+            queue, cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
         )
         
         status, _, _ = _classify_response(message)
@@ -957,5 +972,5 @@ async def get_stream_generator(job_id: str):
                 break
             yield f"data: {json.dumps(data)}\n\n"
         except asyncio.TimeoutError:
-            # Hantar Keep-Alive jika backend terlalu lama processing (mengelakkan Railway putus sambungan)
+            # Hantar Keep-Alive jika backend terlalu lama processing
             yield f"data: {json.dumps({'type': 'log', 'msg': '[KEEP-ALIVE] Waiting for backend process...'})}\n\n"
