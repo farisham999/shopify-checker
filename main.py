@@ -1,12 +1,12 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from engine import shopify_auto_check
-import json
+from fastapi.responses import StreamingResponse, JSONResponse
+from engine import run_background_process, get_stream_generator
+import asyncio
+import uuid
 
 app = FastAPI()
 
-# Benarkan webpage HTML connect ke API ni
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,31 +14,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def event_stream(card_str, site_url, proxy_str):
-    try:
-        async for data in shopify_auto_check(card_str, site_url, proxy_str):
-            yield f"data: {json.dumps(data)}\n\n"
-    except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'msg': str(e)})}\n\n"
+# Memory storage sementara untuk hold stream results
+active_streams = {}
 
-@app.post("/check")
-async def check_card(request: Request):
+@app.post("/start")
+async def start_check(request: Request):
     data = await request.json()
     card_str = data.get("card")
     site_url = data.get("site")
     proxy_str = data.get("proxy")
     
+    if not card_str or not site_url:
+        return JSONResponse({"error": "Missing card or site"}, status_code=400)
+        
+    job_id = str(uuid.uuid4())
+    
+    # Mulakan proses berat di background SEGERA
+    asyncio.create_task(run_background_process(job_id, card_str, site_url, proxy_str))
+    
+    # Hantar ID kepada HTML dengan serta-merta (mengelakkan timeout)
+    return JSONResponse({"job_id": job_id})
+
+@app.get("/stream/{job_id}")
+async def stream_check(job_id: str):
+    generator = get_stream_generator(job_id)
     return StreamingResponse(
-        event_stream(card_str, site_url, proxy_str),
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no", # PENTING: Elakkan Railway/Proxy simpan buffer
+            "X-Accel-Buffering": "no",
         }
     )
 
 if __name__ == "__main__":
     import uvicorn
-    # timeout_keep_alive=300 untuk bagi masa 5 minit
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
