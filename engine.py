@@ -490,17 +490,24 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             # 3. Submit GraphQL payment directly
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
-            graphql_headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Origin': ourl,
-                'Referer': f"{ourl}/",
-                'User-Agent': product_headers['User-Agent'],
-                'X-Checkout-One-Session-Token': sst,
-                'X-Checkout-Web-Deploy-Stage': 'production',
-                'X-Checkout-Web-Server-Handling': 'fast',
-                'X-Checkout-Web-Source-Id': c_token,
-            }
+graphql_headers = {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'Origin': ourl,
+    'Referer': f"{ourl}/",
+    'User-Agent': product_headers['User-Agent'],
+    'X-Checkout-One-Session-Token': sst,
+    'X-Checkout-Web-Deploy-Stage': 'production',
+    'X-Checkout-Web-Server-Handling': 'fast',
+    'X-Checkout-Web-Source-Id': c_token,
+    # --- TAMBAH INI ---
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"'
+}
 
             random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
 
