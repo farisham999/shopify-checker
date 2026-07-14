@@ -338,7 +338,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             await queue.put({"type": "log", "msg": "[STEP 2] Visiting product page & initializing cart..."})
             try:
                 await session.get(product_link, headers=product_headers)
-                await asyncio.sleep(random.uniform(0.5, 1.5)) # Delay anti-bot
+                await asyncio.sleep(random.uniform(0.5, 1.5))
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
                 await queue.put({"type": "log", "msg": "[STEP 2 OK] Cookies dropped successfully."})
             except Exception as e:
@@ -382,7 +382,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             
             try:
                 await session.get(f"{ourl}/checkout", headers=checkout_headers)
-                await asyncio.sleep(random.uniform(1.0, 2.0)) # Delay anti-bot
+                await asyncio.sleep(random.uniform(1.0, 2.0))
                 resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data={'checkout': '', 'updates[]': '1'}, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
@@ -478,7 +478,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                 await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
-            await asyncio.sleep(random.uniform(2.0, 4.0)) # DELAY ANTI-BOT KETAT SEBELUM GRAPHQL
+            await asyncio.sleep(random.uniform(2.0, 4.0))
 
             await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
@@ -581,7 +581,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                             'sessionId': sessionid,
                                             'billingAddress': {
                                                 'streetAddress': {
-                                                    'address1': b_add1,
+                                                    'address1": b_add1,
                                                     'address2': '',
                                                     'city': b_city,
                                                     'countryCode': b_country_code,
@@ -772,9 +772,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                     return True, "ORDER_PLACED", gateway, total_price, currency
                 
                 final_lower = final_text.lower()
-                if "challenge" in final_url.lower() or "challenge" in final_lower or "recaptcha" in final_lower or "hcaptcha" in final_lower:
-                    await queue.put({"type": "log", "msg": "[FAILED] Captcha/Challenge detected in fallback."})
-                    return True, "CAPTCHA_DETECTED", gateway, total_price, currency
                 
                 is_3ds = (
                     "three_d_secure" in final_url.lower() or 
@@ -937,8 +934,6 @@ async def run_background_process(job_id: str, card_str: str, site_url: str, prox
             queue, cc=cc, mes=mes, ano=ano, cvv=cvv, site_url=site, proxy_str=proxy_str
         )
         
-        # Pastikan kita sentiasa pass 'message' yang asal dari process_card
-        # Supaya bila sampai depan UI, result atas sama dengan raw response
         final_msg = message if message else "UNKNOWN_ERROR"
         status, _, _ = _classify_response(final_msg)
         
