@@ -581,7 +581,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                             'sessionId': sessionid,
                                             'billingAddress': {
                                                 'streetAddress': {
-                                                    'address1": b_add1,
+                                                    'address1': b_add1,
                                                     'address2': '',
                                                     'city': b_city,
                                                     'countryCode': b_country_code,
