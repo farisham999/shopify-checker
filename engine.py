@@ -646,12 +646,6 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                             'shippingScriptChanges': [],
                         },
                         'optionalDuties': {'buyerRefusesDuties': False},
-                        # Tambahan untuk accept terms terus, elak retry
-                        'negotiationStrategy': {
-                            'acceptedTerms': True,
-                            'acceptUnexpectedDiscounts': True,
-                            'acceptUnexpectedTaxes': True
-                        },
                     },
                     'attemptToken': f'{c_token}-{random.random()}',
                     'metafields': [],
@@ -664,45 +658,68 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
             }
 
             receipt_id = None
-            # Buang retry loop, buat 1 kali je
-            try:
-                graphql_resp = await session.post(graphql_url, headers=graphql_headers, json=graphql_payload, timeout=15)
-                await queue.put({"type": "log", "msg": f"          -> GraphQL HTTP Status: {graphql_resp.status_code}"})
-                
-                if graphql_resp.status_code != 200:
-                    await queue.put({"type": "log", "msg": "[ERROR STEP 7] GraphQL submission failed."})
-                    return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
-                
-                result_data = graphql_resp.json()
-                completion = result_data.get('data', {}).get('submitForCompletion', {})
-                typename = completion.get('__typename')
-                await queue.put({"type": "log", "msg": f"          -> GraphQL Typename: {typename}"})
-                
-                if typename == 'CheckpointDenied':
-                    await queue.put({"type": "log", "msg": "[ERROR STEP 7] Checkpoint Denied (Captcha/Security)."})
-                    return True, "CARD_DECLINED", gateway, total_price, currency
+            for submit_attempt in range(2):
+                try:
+                    graphql_resp = await session.post(graphql_url, headers=graphql_headers, json=graphql_payload, timeout=15)
+                    await queue.put({"type": "log", "msg": f"          -> GraphQL HTTP Status: {graphql_resp.status_code}"})
                     
-                if completion.get('receipt'):
-                    receipt_id = completion['receipt'].get('id')
-                    await queue.put({"type": "log", "msg": f"[STEP 7 OK] Receipt ID Captured: {receipt_id}"})
-                
-                if completion.get('errors'):
-                    errors = completion['errors']
-                    error_codes = [e.get('code') for e in errors if 'code' in e]
-                    error_msgs = [e.get('localizedMessage', '') for e in errors if 'localizedMessage' in e]
+                    if graphql_resp.status_code != 200:
+                        if submit_attempt == 0:
+                            await queue.put({"type": "log", "msg": "          -> Retrying in 2s..."})
+                            await asyncio.sleep(2)
+                            continue
+                        await queue.put({"type": "log", "msg": "[ERROR STEP 7] GraphQL submission failed."})
+                        return False, f"GraphQL submission failed: Status {graphql_resp.status_code}", gateway, total_price, currency
                     
-                    await queue.put({"type": "log", "msg": f"          -> Gateway Errors: {error_codes} | Msgs: {error_msgs}"})
+                    result_data = graphql_resp.json()
+                    completion = result_data.get('data', {}).get('submitForCompletion', {})
+                    typename = completion.get('__typename')
+                    await queue.put({"type": "log", "msg": f"          -> GraphQL Typename: {typename}"})
                     
-                    # Pulangkan error terus, jangan retry
-                    return True, ', '.join(error_codes), gateway, total_price, currency
-                
-                if completion.get('reason'):
-                    await queue.put({"type": "log", "msg": f"[FAILED STEP 7] Submit reason: {completion.get('reason')}"})
-                    return True, completion['reason'], gateway, total_price, currency
-
-            except Exception as e:
-                await queue.put({"type": "log", "msg": f"[ERROR STEP 7] Exception: {str(e)}"})
-                return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
+                    if typename == 'CheckpointDenied':
+                        await queue.put({"type": "log", "msg": "[ERROR STEP 7] Checkpoint Denied (Captcha/Security)."})
+                        return True, "CARD_DECLINED", gateway, total_price, currency
+                        
+                    if completion.get('receipt'):
+                        receipt_id = completion['receipt'].get('id')
+                        await queue.put({"type": "log", "msg": f"[STEP 7 OK] Receipt ID Captured: {receipt_id}"})
+                    
+                    if completion.get('errors'):
+                        errors = completion['errors']
+                        error_codes = [e.get('code') for e in errors if 'code' in e]
+                        error_msgs = [e.get('localizedMessage', '') for e in errors if 'localizedMessage' in e]
+                        
+                        await queue.put({"type": "log", "msg": f"          -> Gateway Errors: {error_codes} | Msgs: {error_msgs}"})
+                        
+                        soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
+                        only_soft_errors = all(code in soft_errors for code in error_codes)
+                        if only_soft_errors and submit_attempt == 0:
+                            # Retry dengan Accept Terms
+                            graphql_payload['variables']['input']['negotiationStrategy'] = {
+                                'acceptedTerms': True,
+                                'acceptUnexpectedDiscounts': True,
+                                'acceptUnexpectedTaxes': True
+                            }
+                            graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
+                            await asyncio.sleep(2)
+                            continue
+                        
+                        non_soft_errors = [code for code in error_codes if code not in soft_errors]
+                        if non_soft_errors:
+                            await queue.put({"type": "log", "msg": f"[FAILED STEP 7] Hard errors returned from gateway."})
+                            return True, ', '.join(non_soft_errors), gateway, total_price, currency
+                    
+                    if completion.get('reason'):
+                        await queue.put({"type": "log", "msg": f"[FAILED STEP 7] Submit reason: {completion.get('reason')}"})
+                        return True, completion['reason'], gateway, total_price, currency
+                    
+                    break
+                except Exception as e:
+                    if submit_attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    await queue.put({"type": "log", "msg": f"[ERROR STEP 7] Exception: {str(e)}"})
+                    return False, f"GraphQL submission failed: {str(e)}", gateway, total_price, currency
 
             if receipt_id:
                 await queue.put({"type": "log", "msg": "[STEP 8] Polling for receipt status (Waiting bank response)..."})
