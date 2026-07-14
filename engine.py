@@ -771,7 +771,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                                 code = receipt.get('processingError', {}).get('code') or "UNKNOWN_CODE"
                                 msg = receipt.get('processingError', {}).get('messageUntranslated') or "No message"
                                 await queue.put({"type": "log", "msg": f"[FAILED] Bank Rejected: {code} - {msg}"})
-                                return True, f"FAILED_RECEIPT | Code: {code} | Msg: {msg}", gateway, total_price, currency
+                                return True, f"{code}", gateway, total_price, currency
                     except Exception:
                         pass
             else:
@@ -922,10 +922,8 @@ def _classify_response(response_text: str) -> tuple:
         return "Approved", resp, "-"
         
     if any(k in resp_lower for k in declined_patterns):
-        display_msg = resp
-        if 'generic_error' in resp_lower or 'generic_decline' in resp_lower:
-            display_msg = 'Card Declined'
-        return "Dead", display_msg, "-"
+        # Hantar mesej asal (resp) supaya sama dengan raw response
+        return "Dead", resp, "-"
     if any(k in resp_lower for k in system_error_patterns):
         return "Error", resp, "-"
 
