@@ -694,12 +694,7 @@ async def process_card(queue, cc, mes, ano, cvv, site_url, variant_id=None, prox
                         soft_errors = ['TAX_NEW_TAX_MUST_BE_ACCEPTED', 'WAITING_PENDING_TERMS']
                         only_soft_errors = all(code in soft_errors for code in error_codes)
                         if only_soft_errors and submit_attempt == 0:
-                            # Retry dengan Accept Terms
-                            graphql_payload['variables']['input']['negotiationStrategy'] = {
-                                'acceptedTerms': True,
-                                'acceptUnexpectedDiscounts': True,
-                                'acceptUnexpectedTaxes': True
-                            }
+                            # Retry dengan attemptToken baru (tanpa negotiationStrategy)
                             graphql_payload['variables']['attemptToken'] = f'{c_token}-{random.random()}'
                             await asyncio.sleep(2)
                             continue
